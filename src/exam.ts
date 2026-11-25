@@ -138,7 +138,10 @@ function escapeInvalidJsonBackslashes(raw: string): string {
     if (char === '\\') {
       const next = raw[i + 1]
       if (next && !['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'].includes(next)) output += '\\\\'
-      else output += char
+      else {
+        output += char
+        if (next) output += raw[++i]
+      }
       continue
     }
     output += char
