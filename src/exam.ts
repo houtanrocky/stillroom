@@ -13,7 +13,7 @@ export type Question = {
   choiceExplanations?: Record<string, string>
   hints: Hint[]
   topic?: string
-  difficulty?: 'gentle' | 'deep' | 'brutal'
+  difficulty?: string
   points?: number
 }
 export type Exam = {
@@ -141,7 +141,6 @@ export function validateExam(value: unknown): Exam {
   if (!found) throw new Error('The JSON must contain an exam object with a questions array.')
   const exam = found as Record<string, unknown>
   if (typeof exam.title !== 'string' || !exam.title.trim() || !Array.isArray(exam.questions) || exam.questions.length === 0) throw new Error('Add a title and at least one question.')
-  if (exam.mode !== 'feedback' && exam.mode !== 'washback') throw new Error('Mode must be "feedback" or "washback".')
   if (exam.subtitle !== undefined && typeof exam.subtitle !== 'string') throw new Error('Exam subtitle must be a string.')
   if (exam.subject !== undefined && typeof exam.subject !== 'string') throw new Error('Exam subject must be a string.')
   if (exam.pointsPerQuestion !== undefined && (typeof exam.pointsPerQuestion !== 'number' || !Number.isFinite(exam.pointsPerQuestion) || exam.pointsPerQuestion < 0)) throw new Error('Points per question must be a non-negative number.')
@@ -151,10 +150,10 @@ export function validateExam(value: unknown): Exam {
     if (typeof question.prompt !== 'string' || !question.prompt.trim()) throw new Error(`Question ${index + 1} needs a prompt.`)
     if (typeof question.id !== 'string' || !question.id.trim()) throw new Error(`Question ${index + 1} needs a string id.`)
     const rawChoices = Array.isArray(question.choices) ? question.choices : []
-    const type = question.type ?? (rawChoices.length ? 'multiple-choice' : 'short-answer')
-    if (!['multiple-choice', 'short-answer', 'free-response', 'proof'].includes(String(type))) throw new Error(`Question ${index + 1} type must be multiple-choice, short-answer, free-response, or proof.`)
+    const knownTypes = ['multiple-choice', 'short-answer', 'free-response', 'proof']
+    const inferredType = rawChoices.length ? 'multiple-choice' : 'short-answer'
+    const type = knownTypes.includes(String(question.type)) ? question.type as QuestionType : inferredType
     if (question.points !== undefined && (typeof question.points !== 'number' || !Number.isFinite(question.points) || question.points < 0)) throw new Error(`Question ${index + 1} points must be a non-negative number.`)
-    if (question.difficulty !== undefined && !['gentle', 'deep', 'brutal'].includes(String(question.difficulty))) throw new Error(`Question ${index + 1} difficulty must be gentle, deep, or brutal.`)
     const choices = rawChoices.map((rawChoice, choiceIndex) => {
       if (!isRecord(rawChoice) || typeof rawChoice.id !== 'string' || !rawChoice.id.trim() || typeof rawChoice.text !== 'string') throw new Error(`Question ${index + 1}, choice ${choiceIndex + 1} needs a text and non-empty string id.`)
       return keep(rawChoice, ['id', 'text']) as Choice
@@ -176,9 +175,8 @@ export function validateExam(value: unknown): Exam {
     }) : []
     let choiceExplanations: Record<string, string> | undefined
     if (question.choiceExplanations !== undefined) {
-      if (type !== 'multiple-choice') throw new Error(`Question ${index + 1} can only use choiceExplanations for multiple-choice questions.`)
       const rawExplanations = question.choiceExplanations
-      if (!isRecord(rawExplanations)) throw new Error(`Question ${index + 1} choiceExplanations must be an object keyed by choice id.`)
+      if (type !== 'multiple-choice' || !isRecord(rawExplanations)) return { ...keep(question, ['id', 'prompt', 'answer', 'expectedAnswer', 'rubric', 'explanation', 'topic', 'difficulty', 'points']), explanation: typeof question.explanation === 'string' ? question.explanation : '', type, choices, hints } as Question
       const wrongChoices = choices.filter(choice => choice.id !== question.answer)
       for (const choice of wrongChoices) if (typeof rawExplanations[choice.id] !== 'string' || !(rawExplanations[choice.id] as string).trim()) throw new Error(`Question ${index + 1} needs a non-empty choice explanation for ${choice.id}.`)
       choiceExplanations = Object.fromEntries(wrongChoices.map(choice => [choice.id, rawExplanations[choice.id]])) as Record<string, string>
@@ -187,6 +185,7 @@ export function validateExam(value: unknown): Exam {
   })
   if (new Set(questions.map(question => question.id)).size !== questions.length) throw new Error('Question ids must be unique.')
   if (exam.hideOptionsUntilWork !== undefined && typeof exam.hideOptionsUntilWork !== 'boolean') throw new Error('hideOptionsUntilWork must be true or false.')
-  const normalized = keep(exam, ['title', 'subtitle', 'subject', 'mode', 'pointsPerQuestion', 'hideOptionsUntilWork']) as unknown as Exam
-  return { ...normalized, questions }
+  const normalized = keep(exam, ['title', 'subtitle', 'subject', 'pointsPerQuestion', 'hideOptionsUntilWork']) as unknown as Omit<Exam, 'mode'>
+  const mode = exam.mode === 'feedback' ? 'feedback' : 'washback'
+  return { ...normalized, mode, questions }
 }
