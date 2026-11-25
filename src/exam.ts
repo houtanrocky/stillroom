@@ -23,6 +23,8 @@ export type Exam = {
   mode: 'feedback' | 'washback'
   pointsPerQuestion?: number
   hideOptionsUntilWork?: boolean
+  studyGuide?: string
+  readingReferences?: string[]
   questions: Question[]
 }
 
@@ -171,6 +173,8 @@ export function validateExam(value: unknown): Exam {
   if (typeof exam.title !== 'string' || !exam.title.trim() || !Array.isArray(exam.questions) || exam.questions.length === 0) throw new Error('Add a title and at least one question.')
   if (exam.subtitle !== undefined && typeof exam.subtitle !== 'string') throw new Error('Exam subtitle must be a string.')
   if (exam.subject !== undefined && typeof exam.subject !== 'string') throw new Error('Exam subject must be a string.')
+  if (exam.studyGuide !== undefined && typeof exam.studyGuide !== 'string') throw new Error('Study guide must be a Markdown string.')
+  if (exam.readingReferences !== undefined && (!Array.isArray(exam.readingReferences) || exam.readingReferences.some(reference => typeof reference !== 'string'))) throw new Error('Reading references must be an array of strings.')
   if (exam.pointsPerQuestion !== undefined && (typeof exam.pointsPerQuestion !== 'number' || !Number.isFinite(exam.pointsPerQuestion) || exam.pointsPerQuestion < 0)) throw new Error('Points per question must be a non-negative number.')
   const questions = (exam.questions as unknown[]).map((rawQuestion, index): Question => {
     if (!isRecord(rawQuestion)) throw new Error(`Question ${index + 1} must be an object.`)
@@ -213,7 +217,7 @@ export function validateExam(value: unknown): Exam {
   })
   if (new Set(questions.map(question => question.id)).size !== questions.length) throw new Error('Question ids must be unique.')
   if (exam.hideOptionsUntilWork !== undefined && typeof exam.hideOptionsUntilWork !== 'boolean') throw new Error('hideOptionsUntilWork must be true or false.')
-  const normalized = keep(exam, ['title', 'subtitle', 'subject', 'pointsPerQuestion', 'hideOptionsUntilWork']) as unknown as Omit<Exam, 'mode'>
+  const normalized = keep(exam, ['title', 'subtitle', 'subject', 'pointsPerQuestion', 'hideOptionsUntilWork', 'studyGuide', 'readingReferences']) as unknown as Omit<Exam, 'mode'>
   const mode = exam.mode === 'feedback' ? 'feedback' : 'washback'
   return { ...normalized, mode, questions }
 }
