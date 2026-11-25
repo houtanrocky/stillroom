@@ -124,11 +124,36 @@ function jsonCandidates(raw: string): string[] {
   return [...new Set(candidates)]
 }
 
+/** JSON only permits a small set of backslash escapes; LLMs often emit LaTeX commands with a single slash. */
+function escapeInvalidJsonBackslashes(raw: string): string {
+  let output = '', inString = false
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i]
+    if (!inString) {
+      output += char
+      if (char === '"') inString = true
+      continue
+    }
+    if (char === '"') { output += char; inString = false; continue }
+    if (char === '\\') {
+      const next = raw[i + 1]
+      if (next && !['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'].includes(next)) output += '\\\\'
+      else output += char
+      continue
+    }
+    output += char
+  }
+  return output
+}
+
 export function parseExam(raw: string): Exam {
   let value: unknown
   for (const candidate of jsonCandidates(raw)) {
     try {
-      const parsed = findExam(JSON.parse(candidate))
+      let decoded: unknown
+      try { decoded = JSON.parse(candidate) }
+      catch { decoded = JSON.parse(escapeInvalidJsonBackslashes(candidate)) }
+      const parsed = findExam(decoded)
       if (parsed) { value = parsed; break }
     } catch { /* Try the next balanced object, which may be the actual exam. */ }
   }
