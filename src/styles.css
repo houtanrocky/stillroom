@@ -67,3 +67,128 @@
 .storage-alert{padding:12px;background:#faead7;color:#482e12}
 :root[data-theme='dark'] .rubric-review{background:var(--paper);color:var(--ink);padding:12px;border-radius:6px}
 .backup-input{display:inline-grid;gap:4px;margin:8px;font-size:12px}.exam-library>.secondary-button{margin:4px}
+
+.topbar {
+  grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
+  column-gap: 20px;
+}
+.topbar-navigation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.math-toolbox-trigger {
+  white-space: nowrap;
+}
+.math-toolbox {
+  width: min(1120px, calc(100% - 32px));
+  height: min(760px, calc(100% - 32px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 24px 80px #151d1740;
+}
+.math-toolbox[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.math-toolbox::backdrop {
+  background: #171e19a6;
+}
+.math-toolbox-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.math-toolbox-heading h2 {
+  margin: 0 auto 0 0;
+  font: 22px/1.2 var(--serif);
+}
+.math-toolbox-modes {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+}
+.math-toolbox-mode {
+  min-width: 44px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font: 500 12px var(--mono);
+  cursor: pointer;
+}
+.math-toolbox-mode[aria-pressed='true'] {
+  background: var(--moss-dark);
+  color: #fff;
+}
+.math-toolbox-calculator {
+  position: relative;
+  height: 100%;
+  background: #fff;
+}
+.math-toolbox-calculator p {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  background: var(--canvas);
+  font-size: 13px;
+  pointer-events: none;
+}
+.math-toolbox-calculator iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.math-toolbox-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+}
+.math-toolbox-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  text-underline-offset: 2px;
+}
+@media (max-width: 800px) {
+  .topbar { grid-template-columns: 1fr auto; }
+  .topbar-center { display: none; }
+  .topbar-right { gap: 9px; }
+  .saved-state { display: none; }
+}
+@media (max-width: 540px) {
+  .topbar {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+    gap: 6px;
+    padding: 8px 12px;
+  }
+  .topbar-right { display: contents; }
+  .topbar-navigation { grid-column: 1 / -1; }
+  .topbar-navigation .secondary-button { height: 34px; }
+}
+@media (max-width: 470px) {
+  .math-toolbox { width: calc(100% - 12px); height: calc(100% - 12px); }
+  .math-toolbox-heading { gap: 8px; padding: 8px; }
+  .math-toolbox-heading h2 { font-size: 19px; }
+  .math-toolbox-footer { padding: 8px; }
+}

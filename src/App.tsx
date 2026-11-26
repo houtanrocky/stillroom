@@ -2,6 +2,7 @@ import { listAttempts, saveAttempt } from './library'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, CircleHelp, Clock3, Copy, FileJson2, Focus, Layers2, Lightbulb, LockKeyhole, Moon, Pause, Play, Plus, RotateCcw, Sparkles, Sun, X, Minus } from 'lucide-react'
 import { demoExam, parseExam, type Exam, type Question, type QuestionType } from './exam'
+import MathToolbox from './MathToolbox'
 
 type Screen = 'library' | 'welcome' | 'run' | 'results'
 export type RunData = { id: string; updated: number; completed?: boolean; exam: Exam; mode: Exam['mode']; index: number; answers: Record<string, string>; responses: Record<string, string>; selfGrades: Record<string, 'met' | 'review'>; committed: string[]; hints: Record<string, number>; work: Record<string, string>; revealedChoices: string[]; explanations: Record<string, string>; seconds: number; paused: boolean; studyGuideOpen: boolean }
@@ -225,7 +226,19 @@ export default function App() {
     <header className="topbar">
       <button className="brand" onClick={() => screen === 'run' ? setConfirmFinish(true) : setScreen('welcome')} aria-label="Stillroom home"><span className="brand-icon"><span /></span><span className="brand-name">stillroom<span className="brand-period">.</span></span></button>
       <div className="topbar-center"><span className="quiet-mark" />A QUIET PLACE TO THINK</div>
-      <div className="topbar-right">{screen === 'run' && <span className="saved-state"><span />Autosaved</span>}<div className="font-controls" role="group" aria-label="Reading size"><button className="icon-button" title="Decrease font size" aria-label="Decrease font size" disabled={fontScale <= 0.9} onClick={() => setFontScale(size => Math.max(0.9, Math.round((size - 0.1) * 10) / 10))}><Minus size={14} /></button><button className="icon-button" title="Increase font size" aria-label="Increase font size" disabled={fontScale >= 1.2} onClick={() => setFontScale(size => Math.min(1.2, Math.round((size + 0.1) * 10) / 10))}><Plus size={14} /></button></div><button className="icon-button" title="Exam JSON format" aria-label="Exam JSON format" onClick={() => setJsonOpen(true)}><CircleHelp size={17} strokeWidth={1.7} /></button><button className="icon-button theme-toggle" title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(current => current === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</button><button className="secondary-button library-link" onClick={() => setScreen('library')}>Exams</button></div>
+      <div className="topbar-right">
+        {screen === 'run' && <span className="saved-state"><span />Autosaved</span>}
+        <div className="font-controls" role="group" aria-label="Reading size">
+          <button className="icon-button" title="Decrease font size" aria-label="Decrease font size" disabled={fontScale <= 0.9} onClick={() => setFontScale(size => Math.max(0.9, Math.round((size - 0.1) * 10) / 10))}><Minus size={14} /></button>
+          <button className="icon-button" title="Increase font size" aria-label="Increase font size" disabled={fontScale >= 1.2} onClick={() => setFontScale(size => Math.min(1.2, Math.round((size + 0.1) * 10) / 10))}><Plus size={14} /></button>
+        </div>
+        <button className="icon-button" title="Exam JSON format" aria-label="Exam JSON format" onClick={() => setJsonOpen(true)}><CircleHelp size={17} strokeWidth={1.7} /></button>
+        <button className="icon-button theme-toggle" title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(current => current === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</button>
+        <div className="topbar-navigation">
+          <MathToolbox />
+          <button className="secondary-button library-link" onClick={() => setScreen('library')}>Exams</button>
+        </div>
+      </div>
     </header>
 
     {storageError && <p role="alert" className="storage-alert">{storageError}</p>}

@@ -11,6 +11,10 @@ npm run dev
 
 Create a production build with `npm run build`.
 
+## Math toolbox
+
+Open **Math toolbox** from the header to plot 2D curves and explore 3D surfaces with the embedded GeoGebra calculators. The calculators load over the internet when opened. GeoGebra is free for non-commercial use and requires a separate license for commercial use. See [GeoGebra licensing](https://www.geogebra.org/license).
+
 ## Exam JSON format
 
 The root object describes the exam. Each question has a prompt, choices, the ID of its correct choice, a short explanation, and optionally progressive hints. LaTeX is supported in text using `$inline math$` or `$$display math$$`. Markdown is also supported.
