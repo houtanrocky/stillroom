@@ -61,3 +61,8 @@ The platform presents the supplied exam data and provides interaction, scoring, 
 ## Question explanations
 
 Each question offers an Explain more prompt tailored to its imported question JSON and an optional learner request. The prompt specifies Markdown/LaTeX and a versioned JSON response protocol (stillroom.explanation.v1) with Markdown blocks and optional declarative 2D SVG diagrams. Learners paste the LLM response into the modal. The app renders only supported Markdown and an allowlist of SVG shapes/attributes; it does not execute generated code. Explanations are stored by question ID in the autosaved active run in browser local storage, so they remain available when navigating questions, leaving and resuming, or reloading the app on the same device.
+
+## Exams library
+
+Exams keeps each practice attempt in IndexedDB, including answers, proof grading, progress and attached explanations. Resume unfinished attempts or review a completed attempt and practice it again. The previous active session migrates on first load. History belongs to the current browser profile and can be lost if site data is cleared.
+Download a library backup from Exams and restore it in another profile. Restore adds missing attempts and keeps existing ones.

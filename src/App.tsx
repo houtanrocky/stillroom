@@ -1,9 +1,10 @@
+import { listAttempts, saveAttempt } from './library'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, CircleHelp, Clock3, Copy, FileJson2, Focus, Layers2, Lightbulb, LockKeyhole, Moon, Pause, Play, Plus, RotateCcw, Sparkles, Sun, X, Minus } from 'lucide-react'
 import { demoExam, parseExam, type Exam, type Question, type QuestionType } from './exam'
 
-type Screen = 'welcome' | 'run' | 'results'
-type RunData = { exam: Exam; mode: Exam['mode']; index: number; answers: Record<string, string>; responses: Record<string, string>; selfGrades: Record<string, 'met' | 'review'>; committed: string[]; hints: Record<string, number>; work: Record<string, string>; revealedChoices: string[]; explanations: Record<string, string>; seconds: number; paused: boolean; studyGuideOpen: boolean }
+type Screen = 'library' | 'welcome' | 'run' | 'results'
+export type RunData = { id: string; updated: number; completed?: boolean; exam: Exam; mode: Exam['mode']; index: number; answers: Record<string, string>; responses: Record<string, string>; selfGrades: Record<string, 'met' | 'review'>; committed: string[]; hints: Record<string, number>; work: Record<string, string>; revealedChoices: string[]; explanations: Record<string, string>; seconds: number; paused: boolean; studyGuideOpen: boolean }
 type PromptSpec = { subject: string; goal: string; level: string; mode: Exam['mode']; style: string; hideOptionsUntilWork: boolean; includeReferences: boolean; includeStudyGuide: boolean; questionCounts: Record<QuestionType, number>; choicesPerQuestion: number }
 const defaultPrompt: PromptSpec = { subject: 'Advanced linear algebra', goal: 'Test deep understanding of linear maps, canonical forms, duality, and the hypotheses behind major theorems.', level: 'Advanced graduate', mode: 'washback', style: 'Difficult but fair. Favor proof insight, counterexamples, subtle assumptions, and calculations that reveal conceptual gaps.', hideOptionsUntilWork: false, includeReferences: false, includeStudyGuide: false, questionCounts: { 'multiple-choice': 0, 'short-answer': 6, 'free-response': 0, proof: 4 }, choicesPerQuestion: 4 }
 const questionType = (q: Question): QuestionType => q.type ?? (q.choices.length ? 'multiple-choice' : 'short-answer')
@@ -129,11 +130,36 @@ export default function App() {
     window.setTimeout(() => setPromptCopied(false), 2200)
   }
 
+  const [library, setLibrary] = useState<RunData[]>([])
+  const [ready, setReady] = useState(false)
+  const [storageError, setStorageError] = useState('')
   useEffect(() => {
-    const raw = localStorage.getItem(SAVE_KEY)
-    if (raw) try { const saved = JSON.parse(raw) as RunData; if (saved.exam?.questions?.length) { const restored = { ...saved, answers: saved.answers ?? {}, responses: saved.responses ?? {}, selfGrades: saved.selfGrades ?? {}, work: saved.work ?? {}, revealedChoices: saved.revealedChoices ?? [], explanations: saved.explanations ?? {}, studyGuideOpen: saved.studyGuideOpen ?? false }; setRun(restored); setExam(saved.exam); setMode(saved.mode) } } catch { localStorage.removeItem(SAVE_KEY) }
+    let mounted = true
+    async function load() {
+      const raw = localStorage.getItem(SAVE_KEY)
+      if (raw) {
+        const saved = JSON.parse(raw)
+        await saveAttempt({ answers: {}, responses: {}, selfGrades: {}, work: {}, revealedChoices: [], explanations: {}, studyGuideOpen: false, ...saved, id: 'legacy-active', updated: Date.now() })
+        localStorage.removeItem(SAVE_KEY)
+      }
+      const attempts = await listAttempts()
+      if (!mounted) return
+      setLibrary(attempts)
+      const latest = attempts.find(item => !item.completed)
+      if (latest) { setRun(latest); setExam(latest.exam); setMode(latest.mode) }
+      setReady(true)
+    }
+    load().catch(() => { if (mounted) setStorageError('Could not open the exam library. Check browser storage permissions and reload.') })
+    return () => { mounted = false }
   }, [])
-  useEffect(() => { if (run && screen === 'run') localStorage.setItem(SAVE_KEY, JSON.stringify(run)) }, [run, screen])
+  useEffect(() => {
+    if (!ready || !run || (screen !== 'run' && screen !== 'results')) return
+    const attempt = { ...run, updated: Date.now() }
+    saveAttempt(attempt).then(() => {
+      setLibrary(items => [attempt, ...items.filter(item => item.id !== attempt.id)])
+      setStorageError('')
+    }).catch(() => setStorageError('Your latest changes could not be saved. Check available browser storage.'))
+  }, [run, screen, ready])
   useEffect(() => {
     if (!run || run.paused || screen !== 'run') return
     const timer = window.setInterval(() => setRun(r => r ? { ...r, seconds: r.seconds + 1 } : r), 1000)
@@ -141,7 +167,7 @@ export default function App() {
   }, [run?.paused, screen])
 
   const startWith = (selectedExam: Exam, selectedMode: Exam['mode']) => {
-    const active: RunData = { exam: selectedExam, mode: selectedMode, index: 0, answers: {}, responses: {}, selfGrades: {}, committed: [], hints: {}, work: {}, revealedChoices: [], explanations: {}, seconds: 0, paused: false, studyGuideOpen: !!(selectedExam.studyGuide || selectedExam.readingReferences?.length) }
+    const active: RunData = { id: crypto.randomUUID(), updated: Date.now(), exam: selectedExam, mode: selectedMode, index: 0, answers: {}, responses: {}, selfGrades: {}, committed: [], hints: {}, work: {}, revealedChoices: [], explanations: {}, seconds: 0, paused: false, studyGuideOpen: !!(selectedExam.studyGuide || selectedExam.readingReferences?.length) }
     setRun(active); setExam(selectedExam); setMode(selectedMode); setScreen('run'); setError(''); setConfirmFinish(false); setFocus(false)
   }
   const start = (resume = false) => {
@@ -169,10 +195,10 @@ export default function App() {
   }
   const finish = () => {
     if (!run) return
-    const done = { ...run, committed: run.exam.questions.map(q => q.id), paused: true }
-    setRun(done); setScreen('results'); setConfirmFinish(false); localStorage.removeItem(SAVE_KEY)
+    const done = { ...run, completed: true, committed: run.exam.questions.map(q => q.id), paused: true }
+    setRun(done); setScreen('results'); setConfirmFinish(false)
   }
-  const reset = () => { setRun(null); setScreen('welcome'); setFocus(false); localStorage.removeItem(SAVE_KEY) }
+  const reset = () => { setRun(null); setScreen('welcome'); setFocus(false) }
   const current = run?.exam.questions[run.index]
   const explanationPrompt = current ? `You are a patient tutor. Help the learner understand this exact question without changing its meaning.\n\nEXAM: ${run?.exam.title ?? ''}\nSUBJECT: ${run?.exam.subject ?? ''}\nQUESTION DATA (authoritative JSON):\n${JSON.stringify(current, null, 2)}\n\nLEARNER REQUEST: ${explainRequest.trim() || 'Explain the question clearly and identify what it is asking.'}\n\nAvailable output tools: Markdown text, inline/display LaTeX, and a declarative 2D SVG drawing. Use a drawing only when it materially helps (geometry, graphs, diagrams); do not emit executable code, scripts, external URLs, or 3D. Return exactly one JSON object, no fences or extra prose, in this protocol:\n{\n  "protocol": "stillroom.explanation.v1",\n  "questionId": ${JSON.stringify(current.id)},\n  "title": "Brief heading",\n  "blocks": [\n    { "type": "markdown", "content": "Explanation using Markdown and delimited LaTeX" },\n    { "type": "svg", "title": "Diagram title", "viewBox": "0 0 400 240", "elements": [{ "shape": "line", "x1": 20, "y1": 120, "x2": 380, "y2": 120, "stroke": "#536b55", "strokeWidth": 2 }, { "shape": "circle", "cx": 200, "cy": 120, "r": 8, "fill": "#536b55" }, { "shape": "text", "x": 208, "y": 110, "text": "A", "fill": "#303a32" }] }\n  ]\n}\nUse only markdown blocks and SVG elements line, circle, rect, path, text, polygon. SVG coordinates must fit viewBox; use simple paths and short labels. Omit SVG when unnecessary. Do not reveal the answer unless the learner explicitly asks; focus on interpreting terms, givens, goals, and a first step. Do not include HTML or arbitrary SVG attributes.` : ''
   const copyExplanationPrompt = async () => { try { await navigator.clipboard.writeText(explanationPrompt) } catch { /* The prompt remains selectable in its preview. */ } setExplainCopied(true); window.setTimeout(() => setExplainCopied(false), 2200) }
@@ -199,14 +225,66 @@ export default function App() {
     <header className="topbar">
       <button className="brand" onClick={() => screen === 'run' ? setConfirmFinish(true) : setScreen('welcome')} aria-label="Stillroom home"><span className="brand-icon"><span /></span><span className="brand-name">stillroom<span className="brand-period">.</span></span></button>
       <div className="topbar-center"><span className="quiet-mark" />A QUIET PLACE TO THINK</div>
-      <div className="topbar-right">{screen === 'run' && <span className="saved-state"><span />Autosaved</span>}<div className="font-controls" role="group" aria-label="Reading size"><button className="icon-button" title="Decrease font size" aria-label="Decrease font size" disabled={fontScale <= 0.9} onClick={() => setFontScale(size => Math.max(0.9, Math.round((size - 0.1) * 10) / 10))}><Minus size={14} /></button><button className="icon-button" title="Increase font size" aria-label="Increase font size" disabled={fontScale >= 1.2} onClick={() => setFontScale(size => Math.min(1.2, Math.round((size + 0.1) * 10) / 10))}><Plus size={14} /></button></div><button className="icon-button" title="Exam JSON format" aria-label="Exam JSON format" onClick={() => setJsonOpen(true)}><CircleHelp size={17} strokeWidth={1.7} /></button><button className="icon-button theme-toggle" title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(current => current === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</button><button className="avatar" aria-label="Personal study space">S</button></div>
+      <div className="topbar-right">{screen === 'run' && <span className="saved-state"><span />Autosaved</span>}<div className="font-controls" role="group" aria-label="Reading size"><button className="icon-button" title="Decrease font size" aria-label="Decrease font size" disabled={fontScale <= 0.9} onClick={() => setFontScale(size => Math.max(0.9, Math.round((size - 0.1) * 10) / 10))}><Minus size={14} /></button><button className="icon-button" title="Increase font size" aria-label="Increase font size" disabled={fontScale >= 1.2} onClick={() => setFontScale(size => Math.min(1.2, Math.round((size + 0.1) * 10) / 10))}><Plus size={14} /></button></div><button className="icon-button" title="Exam JSON format" aria-label="Exam JSON format" onClick={() => setJsonOpen(true)}><CircleHelp size={17} strokeWidth={1.7} /></button><button className="icon-button theme-toggle" title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(current => current === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}</button><button className="secondary-button library-link" onClick={() => setScreen('library')}>Exams</button></div>
     </header>
 
-    {screen === 'welcome' && <main className="welcome-page">
+    {storageError && <p role="alert" className="storage-alert">{storageError}</p>}
+    {screen === 'library' && <main className="exam-library">
+      <button className="back-link" onClick={() => setScreen('welcome')}><ArrowLeft size={15} /> Home</button>
+      <h1>Your exams</h1>
+      <button className="secondary-button" disabled={!ready} onClick={() => { setJsonText(''); setError(''); setJsonOpen(true) }}>Import exam</button>
+      <button className="secondary-button" disabled={!library.length} onClick={() => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify({ format: 'stillroom-library-v1', attempts: library })], { type: 'application/json' }))
+        const link = document.createElement('a')
+        link.href = url
+        link.download = 'stillroom-library.json'
+        link.click()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }}>Download backup</button>
+      <label className="backup-input">Restore backup <input type="file" accept=".json" disabled={!ready} onChange={async event => {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (!file) return
+        try {
+          const backup = JSON.parse(await file.text())
+          if (backup.format !== 'stillroom-library-v1' || !Array.isArray(backup.attempts)) throw Error()
+          const attempts = backup.attempts.map((item: RunData) => {
+            const exam = parseExam(JSON.stringify(item.exam))
+            const maps = [item.answers, item.responses, item.explanations, item.selfGrades, item.hints, item.work]
+            if (!maps.every(map => map && typeof map === 'object' && !Array.isArray(map)) ||
+                !Array.isArray(item.committed) || !Array.isArray(item.revealedChoices) ||
+                !Number.isInteger(item.index) || !exam.questions[item.index] || typeof item.id !== 'string' ||
+                !Number.isFinite(item.updated) || !Number.isFinite(item.seconds)) throw Error()
+            return { ...item, exam }
+          })
+          const existing = new Set((await listAttempts()).map(item => item.id))
+          for (const attempt of attempts) {
+            if (!existing.has(attempt.id)) await saveAttempt(attempt)
+          }
+          setLibrary(await listAttempts())
+          setStorageError('')
+        } catch { setStorageError('Could not restore this backup. Choose a Stillroom library backup and check available storage.') }
+      }} /></label>
+      {!library.length && <p>{ready ? 'Your exams will appear here when you start practicing.' : 'Loading exams?'}</p>}
+      {library.map(item => <article key={item.id}>
+        <h2>{item.exam.title}</h2><p>{item.completed ? 'Completed' : 'In progress'} ? {item.exam.questions.length} questions ? {new Date(item.updated).toLocaleString()}</p>
+        {item.completed && <details><summary>Review answers</summary>{item.exam.questions.map(q => <section key={q.id}>
+          <Content text={q.prompt} /><h3>Your answer</h3><Content text={item.responses[q.id] || q.choices.find(c => c.id === item.answers[q.id])?.text || 'Unanswered'} />
+          <h3>Model answer</h3><Content text={q.expectedAnswer || q.choices.find(c => c.id === q.answer)?.text || ''} />
+          {q.rubric && <><h3>Grading rubric</h3><Content text={q.rubric} /></>}
+          {item.explanations[q.id] && <ExplanationDocument raw={item.explanations[q.id]} questionId={q.id} />}
+        </section>)}</details>}
+        <button className="secondary-button" onClick={() => {
+          if (item.completed) startWith(item.exam, item.mode)
+          else { setRun(item); setExam(item.exam); setMode(item.mode); setScreen('run') }
+        }}>{item.completed ? 'Practice again' : 'Resume attempt'}</button>
+      </article>)}
+    </main>}
+    {screen === 'welcome' && ready && <main className="welcome-page">
       <div className="welcome-copy"><div className="eyebrow"><Sparkles size={13} /> YOUR PRIVATE STUDY SPACE</div><h1>Think slowly.<br /><em>See clearly.</em></h1><p className="welcome-intro">A distraction-free place to test what you know, follow the hard parts, and learn from every attempt.</p><div className="welcome-meta"><span><span className="meta-dot" /> Built for deep work</span><span className="meta-divider" /><span>Bring any subject</span></div></div>
       <section className="exam-launch-card"><div className="launch-card-top"><div className="launch-symbol"><Layers2 size={19} strokeWidth={1.7} /></div><span className="launch-count">SESSION 01 <i>—</i> {exam.questions.length} QUESTIONS</span></div><div className="launch-subject">{exam.subject || 'Your next study session'}</div><h2>{exam.title}</h2><p>{exam.subtitle || 'A focused set of questions to work through at your own pace.'}</p><div className="launch-format-summary"><span>QUESTION FORMATS</span><b>{formatSummary}</b></div><div className="launch-rule" /><div className="mode-label">CHOOSE YOUR PACE</div><div className="mode-switch" role="group" aria-label="Exam mode">
         <button className={mode === 'washback' ? 'active' : ''} onClick={() => setMode('washback')}><span className="mode-glyph">?</span><span><b>Washback</b><small>One at a time, hints cost points</small></span></button><button className={mode === 'feedback' ? 'active' : ''} onClick={() => setMode('feedback')}><span className="mode-glyph">?</span><span><b>Feedback</b><small>Explore answers as you go</small></span></button>
-      </div><div className="launch-actions">{run ? <><button className="primary-button" onClick={() => start(true)}>Continue session <ArrowRight size={16} /></button><button className="secondary-button" onClick={() => { localStorage.removeItem(SAVE_KEY); setRun(null); start() }}><RotateCcw size={14} /> Start fresh</button></> : <><button className="primary-button" onClick={() => setPromptOpen(true)}><Sparkles size={15} /> Build an exam prompt</button><button className="secondary-button" onClick={() => start()}>Try the sample exam <ArrowRight size={14} /></button><button className="launch-import-link import-direct" onClick={() => { setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={12} /> I already have exam JSON</button></>}</div>{run && <div className="saved-exam-actions"><button className="launch-import-link" onClick={() => setPromptOpen(true)}><Sparkles size={12} /> Build a prompt for a new exam</button><button className="launch-import-link" onClick={() => { setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={12} /> Bring a different exam</button></div>}<div className="launch-foot"><LockKeyhole size={12} /> Your progress stays on this device</div></section>
+      </div><div className="launch-actions">{run && !run.completed ? <><button className="primary-button" onClick={() => start(true)}>Continue session <ArrowRight size={16} /></button><button className="secondary-button" onClick={() => { start() }}><RotateCcw size={14} /> Start fresh</button></> : <><button className="primary-button" onClick={() => setPromptOpen(true)}><Sparkles size={15} /> Build an exam prompt</button><button className="secondary-button" onClick={() => start()}>Try the sample exam <ArrowRight size={14} /></button><button className="launch-import-link import-direct" onClick={() => { setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={12} /> I already have exam JSON</button></>}</div>{run && <div className="saved-exam-actions"><button className="launch-import-link" onClick={() => setPromptOpen(true)}><Sparkles size={12} /> Build a prompt for a new exam</button><button className="launch-import-link" onClick={() => { setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={12} /> Bring a different exam</button></div>}<div className="launch-foot"><LockKeyhole size={12} /> Your progress stays on this device</div></section>
       <div className="welcome-footer"><span>MADE FOR THE MOMENT BEFORE IT CLICKS</span><span className="footer-orbit">?</span></div>
     </main>}
 
@@ -221,10 +299,10 @@ export default function App() {
           {run.mode === 'washback' && !committed && current.hints.length > 0 && <div className="hint-area"><div className="hint-heading"><span><Lightbulb size={15} /> Need a foothold?</span><span>Each hint lowers this question—s points</span></div><div className="hint-list">{current.hints.map((hint, i) => { const open = (run.hints[current.id] ?? 0) > i; return <div className={`hint-card ${open ? 'revealed' : ''}`} key={`${current.id}-${i}`}><button onClick={() => { if (!open) updateRun(r => ({ ...r, hints: { ...r.hints, [current.id]: i + 1 } })) }} disabled={open}><span className="hint-lock">{open ? <Check size={13} /> : String(i + 1).padStart(2, '0')}</span><span className="hint-name">{hint.label}</span>{open ? <span className="hint-cost">-{hint.cost} pts</span> : <span className="hint-cost">-{hint.cost} pts <ChevronDown size={12} /></span>}</button>{open && <Content className="hint-rich" text={hint.text} />}</div> })}</div></div>}
           {committed && <div className={`answer-review ${correct ? 'review-correct' : 'review-wrong'}`}><div className="review-heading">{correct ? <><CheckCheck size={16} /> {isMultipleChoice ? `Correct — ${earned} points` : `Self-checked — ${earned} points`}</> : <><X size={15} /> {isMultipleChoice ? 'Not quite — take the idea with you' : 'Compare your work with the model answer'}</>}</div><div className="review-answer"><span>{isMultipleChoice ? 'Correct answer' : 'Model answer'}</span><Content className="correct-answer-value" text={isMultipleChoice ? (correctChoice?.text ?? '') : (current.expectedAnswer ?? '')} /></div>{!isMultipleChoice && current.rubric && <div className="rubric-review"><b>Grading rubric</b><Content className="explanation-rich" text={current.rubric} /><div className="self-grade"><span>How did your work compare?</span><button className={run.selfGrades[current.id] === 'met' ? 'selected' : ''} onClick={() => updateRun(r => ({ ...r, selfGrades: { ...r.selfGrades, [current.id]: 'met' } }))}>I met the rubric</button><button className={run.selfGrades[current.id] === 'review' ? 'selected' : ''} onClick={() => updateRun(r => ({ ...r, selfGrades: { ...r.selfGrades, [current.id]: 'review' } }))}>Needs more work</button></div></div>}{current.explanation && <Content className="explanation-rich" text={current.explanation} />}{choiceReview && <div className="choice-review"><h3>Why the other choices are wrong</h3>{choiceReview}</div>}</div>}
           {run.mode === 'feedback' && isMultipleChoice && selected && !committed && <div className={`answer-review ${correct ? 'review-correct' : 'review-wrong'}`}><div className="review-heading">{correct ? <><CheckCheck size={16} /> That—s right</> : <><X size={15} /> Take another look</>}</div><div className="review-answer"><span>Correct answer</span><Content className="correct-answer-value" text={correctChoice?.text ?? ''} /></div>{current.explanation && <Content className="explanation-rich" text={current.explanation} />}{choiceReview && <div className="choice-review"><h3>Why the other choices are wrong</h3>{choiceReview}</div>}</div>}
-          </div><div className="question-footer"><div className="footer-note"><span className="keycap">{run.mode === 'washback' ? '01' : '?'}</span>{run.mode === 'washback' ? 'One considered answer. Then the reasoning.' : 'Change your answer until you move on.'}</div><div className="question-actions">{!isMultipleChoice && !committed && <button className="action-button primary" onClick={() => submit(current)} disabled={!(run.responses[current.id] ?? '').trim()}>Submit for review <ArrowRight size={15} /></button>}{run.mode === 'feedback' && (isMultipleChoice || committed) && <button className="action-button secondary" onClick={() => { if (run.index < run.exam.questions.length - 1) updateRun(r => ({ ...r, index: r.index + 1 })); else setConfirmFinish(true) }}>{run.index === run.exam.questions.length - 1 ? 'Finish review' : 'Next question'} <ArrowRight size={15} /></button>}{run.mode === 'washback' && !committed && isMultipleChoice && <><button className="action-button text-action" onClick={() => submit(current, true)}>I don—t know</button><button className="action-button primary" onClick={() => submit(current)} disabled={!selected}>Lock in answer <ArrowRight size={15} /></button></>}{run.mode === 'washback' && committed && <button className="action-button primary" onClick={() => { if (run.committed.length === run.exam.questions.length) { localStorage.removeItem(SAVE_KEY); setScreen('results') } else updateRun(r => ({ ...r, index: Math.min(r.index + 1, r.exam.questions.length - 1) })) }}>{run.committed.length === run.exam.questions.length ? 'See your reflection' : 'Continue'} <ArrowRight size={15} /></button>}</div></div>
+          </div><div className="question-footer"><div className="footer-note"><span className="keycap">{run.mode === 'washback' ? '01' : '?'}</span>{run.mode === 'washback' ? 'One considered answer. Then the reasoning.' : 'Change your answer until you move on.'}</div><div className="question-actions">{!isMultipleChoice && !committed && <button className="action-button primary" onClick={() => submit(current)} disabled={!(run.responses[current.id] ?? '').trim()}>Submit for review <ArrowRight size={15} /></button>}{run.mode === 'feedback' && (isMultipleChoice || committed) && <button className="action-button secondary" onClick={() => { if (run.index < run.exam.questions.length - 1) updateRun(r => ({ ...r, index: r.index + 1 })); else setConfirmFinish(true) }}>{run.index === run.exam.questions.length - 1 ? 'Finish review' : 'Next question'} <ArrowRight size={15} /></button>}{run.mode === 'washback' && !committed && isMultipleChoice && <><button className="action-button text-action" onClick={() => submit(current, true)}>I don—t know</button><button className="action-button primary" onClick={() => submit(current)} disabled={!selected}>Lock in answer <ArrowRight size={15} /></button></>}{run.mode === 'washback' && committed && <button className="action-button primary" onClick={() => { if (run.committed.length === run.exam.questions.length) { finish() } else updateRun(r => ({ ...r, index: Math.min(r.index + 1, r.exam.questions.length - 1) })) }}>{run.committed.length === run.exam.questions.length ? 'See your reflection' : 'Continue'} <ArrowRight size={15} /></button>}</div></div>
         </section></div></main>}
 
-    {screen === 'results' && run && <main className="results-page"><div className="result-mark"><CheckCheck size={24} /></div><div className="eyebrow">SESSION COMPLETE</div><h1>Good work.<br /><em>Let it settle.</em></h1><p className="result-subtitle">{run.exam.title} — {fmtTime(run.seconds)} of considered work</p><div className="result-score"><span>YOUR SCORE</span><b>{score(run)}<i> / {maxScore}</i></b><div className="result-bar"><i style={{ width: `${maxScore ? score(run) / maxScore * 100 : 0}%` }} /></div><small>{run.exam.questions.filter(q => questionType(q) === 'multiple-choice' ? run.answers[q.id] === q.answer : run.selfGrades[q.id] === 'met').length} of {run.exam.questions.length} self-checked as correct</small></div><div className="result-actions"><button className="primary-button" onClick={() => { setRun(null); localStorage.removeItem(SAVE_KEY); start() }}><RotateCcw size={15} /> Try this set again</button><button className="secondary-button" onClick={reset}>Return to your space</button></div><div className="result-quote">—Understanding is not a destination. It is the shape of the next question.—</div></main>}
+    {screen === 'results' && run && <main className="results-page"><div className="result-mark"><CheckCheck size={24} /></div><div className="eyebrow">SESSION COMPLETE</div><h1>Good work.<br /><em>Let it settle.</em></h1><p className="result-subtitle">{run.exam.title} — {fmtTime(run.seconds)} of considered work</p><div className="result-score"><span>YOUR SCORE</span><b>{score(run)}<i> / {maxScore}</i></b><div className="result-bar"><i style={{ width: `${maxScore ? score(run) / maxScore * 100 : 0}%` }} /></div><small>{run.exam.questions.filter(q => questionType(q) === 'multiple-choice' ? run.answers[q.id] === q.answer : run.selfGrades[q.id] === 'met').length} of {run.exam.questions.length} self-checked as correct</small></div><div className="result-actions"><button className="primary-button" onClick={() => { start() }}><RotateCcw size={15} /> Try this set again</button><button className="secondary-button" onClick={reset}>Return to your space</button></div><div className="result-quote">—Understanding is not a destination. It is the shape of the next question.—</div></main>}
 
     {jsonOpen && <div className="modal-backdrop" onClick={() => setJsonOpen(false)}><section className="json-modal" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">EXAM SOURCE</span><h2>Bring your own questions</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Paste a JSON exam or load a file. Your questions can be on any subject, in any language.</p><button className="file-drop" onClick={() => fileRef.current?.click()}><FileJson2 size={19} /><span><b>Choose a JSON file</b><small>.json — stays on your device</small></span><ArrowRight size={15} /></button><input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={async e => { const file = e.target.files?.[0]; if (file) importJson(await file.text()) }} /><div className="textarea-label">OR PASTE JSON</div><textarea value={jsonText} onChange={e => setJsonText(e.target.value)} placeholder="Paste your exam JSON here—" spellCheck={false} /><div className="modal-bottom">{error && <span className="error-text">{error}</span>}<button className="primary-button" onClick={() => importJson(jsonText)} disabled={!jsonText.trim()}>Use and start exam <ArrowRight size={15} /></button></div><button className="format-link" onClick={() => setJsonText(JSON.stringify(demoExam, null, 2))}>View a complete example format</button></section></div>}
 
