@@ -151,16 +151,41 @@ function escapeInvalidJsonBackslashes(raw: string): string {
   return output
 }
 
-export function parseExam(raw: string): Exam {
-  let value: unknown
+// Rich-text copies can wrap pretty-printed JSON in Markdown hard breaks and escaped spaces.
+function unwrapMarkdownCopy(raw: string): string | undefined {
+  if (!/^\s*&#(?:x20|32);/im.test(raw) || !/\\[ \t]*\r?\n/.test(raw)) return
+
+  const structuralJson = raw.split(/\r?\n/).map(line => line
+    .replace(/^([ \t]*)&#(?:x20|32);/i, '$1 ')
+    .replace(/\\[ \t]*$/, '')).join('\n')
+
+  return structuralJson.replace(/"(?:\\.|[^"\\\r\n])*"/g, literal => literal
+    .replace(/\\+([^\\])/g, (token, next: string) => {
+      const count = token.length - 1
+      if (count === 1 && /[!*_.:#()[\]{};,+\x60~>-]/.test(next)) return next
+      if (count === 4 && /[{};]/.test(next)) return '\\'.repeat(2) + next
+      if (count > 1 && count % 2 === 1 && next !== '"') return '\\'.repeat(Math.ceil(count / 4) * 2) + next
+      return token
+    }))
+}
+
+function decodeExam(raw: string): unknown {
   for (const candidate of jsonCandidates(raw)) {
     try {
       let decoded: unknown
       try { decoded = JSON.parse(candidate) }
       catch { decoded = JSON.parse(escapeInvalidJsonBackslashes(candidate)) }
       const parsed = findExam(decoded)
-      if (parsed) { value = parsed; break }
+      if (parsed) return parsed
     } catch { /* Try the next balanced object, which may be the actual exam. */ }
+  }
+}
+
+export function parseExam(raw: string): Exam {
+  let value = decodeExam(raw)
+  if (!value) {
+    const unwrapped = unwrapMarkdownCopy(raw)
+    if (unwrapped) value = decodeExam(unwrapped)
   }
   if (!value) throw new Error('Could not find a valid JSON exam. Paste the exam object, even if it is surrounded by extra text.')
   return validateExam(value)

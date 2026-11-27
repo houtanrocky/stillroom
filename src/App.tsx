@@ -1,11 +1,13 @@
 import { listAttempts, saveAttempt } from './library'
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, CircleHelp, Clock3, Copy, FileJson2, Focus, Layers2, Lightbulb, LockKeyhole, Moon, Pause, Play, Plus, RotateCcw, Sparkles, Sun, X, Minus } from 'lucide-react'
 import { demoExam, parseExam, type Exam, type Question, type QuestionType } from './exam'
 import MathToolbox from './MathToolbox'
 import { relatednessLevels, studyInstructions, studyPurposes, type Relatedness, type StudyPurpose } from './studyPurpose'
+import { mistakeSource, questionHistory, topicStatistics } from './questionHistory'
+import TopicStatistics from './TopicStatistics'
 
-type Screen = 'library' | 'welcome' | 'run' | 'results'
+type Screen = 'library' | 'welcome' | 'run' | 'results' | 'statistics'
 export type RunData = { id: string; updated: number; completed?: boolean; exam: Exam; mode: Exam['mode']; index: number; answers: Record<string, string>; responses: Record<string, string>; selfGrades: Record<string, 'met' | 'review'>; committed: string[]; hints: Record<string, number>; work: Record<string, string>; revealedChoices: string[]; explanations: Record<string, string>; seconds: number; paused: boolean; studyGuideOpen: boolean }
 type PromptSpec = { subject: string; goal: string; level: string; mode: Exam['mode']; style: string; hideOptionsUntilWork: boolean; includeReferences: boolean; includeStudyGuide: boolean; questionCounts: Record<QuestionType, number>; choicesPerQuestion: number }
 const defaultPrompt: PromptSpec = { subject: 'Advanced linear algebra', goal: 'Test deep understanding of linear maps, canonical forms, duality, and the hypotheses behind major theorems.', level: 'Advanced graduate', mode: 'washback', style: 'Difficult but fair. Favor proof insight, counterexamples, subtle assumptions, and calculations that reveal conceptual gaps.', hideOptionsUntilWork: false, includeReferences: false, includeStudyGuide: false, questionCounts: { 'multiple-choice': 0, 'short-answer': 6, 'free-response': 0, proof: 4 }, choicesPerQuestion: 4 }
@@ -68,6 +70,7 @@ function makePrompt(spec: PromptSpec, instructions: string) {
     `QUESTION COUNT: exactly ${total}`,
     `EXAM MODE: ${spec.mode}`,
     `QUESTION STYLE: ${spec.style}`,
+    'TOPIC LABELS: Give every question a nonempty topic string naming the concept or skill it tests. Use short, reusable labels. Reuse the same spelling and wording for the same skill across questions and retain relevant source labels when available.',
     spec.includeReferences ? 'READING REFERENCES: Include readingReferences as an array of reliable textbooks with exact chapter and section numbers relevant to this exam. Verify titles and section names; do not invent citations. This is optional supporting material, not a substitute for the questions.' : '',
     spec.includeStudyGuide ? 'STUDY GUIDE: Include studyGuide as a concise Markdown string summarizing the concepts, definitions, and prerequisite results needed to approach the questions. It will be shown to the student before the questions, and the student can navigate back and forth between it and the questions.' : '',
     `QUESTION FORMATS AND EXACT COUNTS: ${selectedTypes.map(type => `${type}: exactly ${spec.questionCounts[type]}`).join('; ')}. Produce exactly ${total} questions with those exact per-type counts. Do not replace one type with another or add extra questions. Every question must include a type field set to one of: ${selectedTypes.join(', ')}. Multiple-choice items use choices, answer, explanation, and choiceExplanations, with exactly ${spec.choicesPerQuestion} choices. Written items have no choices and use expectedAnswer and rubric. Short-answer expects a concise response; free-response expects a full explanation or derivation; proof requests a rigorous proof.\n\nCONTENT QUALITY RULES:\n- Make every question self-contained, mathematically correct, appropriate to ${spec.level}, and aligned to the stated learning goal.\n- State the correct answer or model solution first in the review. The app displays it before explanation and rubric.\n- Write all mathematical expressions in delimited LaTeX ($inline$ or $$display$$), including prompts, options, expected answers, rubrics, and distractor analysis, so formulas render on the page. Use Markdown where helpful.\n- Use unique string question IDs and unique string choice IDs within each multiple-choice question. The multiple-choice answer field must exactly equal the ID of its correct choice.\n- Match the schema exactly: exam fields title, subtitle, subject, mode, pointsPerQuestion, hideOptionsUntilWork, studyGuide, readingReferences, questions; question fields id, type, topic, difficulty, points, prompt, choices, answer, expectedAnswer, rubric, explanation, choiceExplanations, hints; choice fields id and text; hint fields label, text, and numeric cost. Omit fields that do not apply to a question type. Set hideOptionsUntilWork exactly to ${spec.hideOptionsUntilWork}; it hides choices until the learner records written work on multiple-choice items. Do not add extra fields or any prose outside the JSON.`,
@@ -101,6 +104,8 @@ export default function App() {
   const [sourceDrafts, setSourceDrafts] = useState<Partial<Record<StudyPurpose, string>>>({})
   const [relatedness, setRelatedness] = useState<Relatedness>('close')
   const [nextSessionClues, setNextSessionClues] = useState('')
+  const [mistakeTopic, setMistakeTopic] = useState('')
+  const [selectedMistakes, setSelectedMistakes] = useState<string[]>([])
   const [promptCopied, setPromptCopied] = useState(false)
   const [explainOpen, setExplainOpen] = useState(false)
   const [explainRequest, setExplainRequest] = useState('')
@@ -125,16 +130,33 @@ export default function App() {
     return { ...spec, hideOptionsUntilWork: type === 'multiple-choice' && nextValue === 0 ? false : spec.hideOptionsUntilWork, questionCounts: { ...spec.questionCounts, [type]: Math.max(0, Math.min(60 - otherTotal, Number.isFinite(nextValue) ? nextValue : 1)) } }
   })
 
+  const [library, setLibrary] = useState<RunData[]>([])
+  const resultAttempt = screen === 'results' ? run : null
+  const history = useMemo(() => questionHistory(resultAttempt
+    ? [resultAttempt, ...library.filter(item => item.id !== resultAttempt.id)]
+    : library), [library, resultAttempt])
+  const topics = useMemo(() => topicStatistics(history), [history])
+  const mistakes = purpose === 'mistakes' ? history.filter(entry => entry.practice) : []
+  const pickedMistakes = mistakes.filter(entry => selectedMistakes.includes(entry.key))
   const source = sourceDrafts[purpose] ?? ''
   const purposeDetails = studyPurposes[purpose]
-  const promptReady = purpose === 'general' || Boolean(source.trim())
+  const promptReady = purpose === 'mistakes' ? pickedMistakes.length > 0 : purpose === 'general' || Boolean(source.trim())
   const prompt = promptOpen && promptReady ? makePrompt({
     ...promptSpec,
     subject: promptSpec.subject.trim() || (purpose === 'general' ? defaultPrompt.subject : 'Infer the subject from the learner material'),
     goal: promptSpec.goal.trim() || (purpose === 'general' ? defaultPrompt.goal : purposeDetails.label),
     level: promptSpec.level.trim() || (purpose === 'general' ? defaultPrompt.level : 'Match the learner material'),
     style: promptSpec.style.trim() || (purpose === 'general' ? defaultPrompt.style : 'Follow the study purpose'),
-  }, studyInstructions(purpose, source, relatedness, nextSessionClues, promptSpec.includeStudyGuide)) : ''
+  }, studyInstructions(purpose, purpose === 'mistakes' ? mistakeSource(pickedMistakes) : source,
+    relatedness, nextSessionClues, promptSpec.includeStudyGuide)) : ''
+
+  const openMistakePractice = (topic = '') => {
+    setPurpose('mistakes')
+    setMistakeTopic(topic)
+    setSelectedMistakes([])
+    setPromptCopied(false)
+    setPromptOpen(true)
+  }
 
   const copyPrompt = async () => {
     if (!prompt) return
@@ -148,7 +170,6 @@ export default function App() {
     window.setTimeout(() => setPromptCopied(false), 2200)
   }
 
-  const [library, setLibrary] = useState<RunData[]>([])
   const [ready, setReady] = useState(false)
   const [storageError, setStorageError] = useState('')
   useEffect(() => {
@@ -213,7 +234,13 @@ export default function App() {
   }
   const finish = () => {
     if (!run) return
-    const done = { ...run, completed: true, committed: run.exam.questions.map(q => q.id), paused: true }
+    const committed = new Set(run.committed)
+    if (run.mode === 'feedback') {
+      for (const q of run.exam.questions) {
+        if (q.choices.some(choice => choice.id === run.answers[q.id])) committed.add(q.id)
+      }
+    }
+    const done = { ...run, completed: true, committed: [...committed], paused: true }
     setRun(done); setScreen('results'); setConfirmFinish(false)
   }
   const reset = () => { setRun(null); setScreen('welcome'); setFocus(false) }
@@ -259,9 +286,11 @@ export default function App() {
     </header>
 
     {storageError && <p role="alert" className="storage-alert">{storageError}</p>}
+    {screen === 'statistics' && <TopicStatistics topics={topics} ready={ready} onBack={() => setScreen('library')} onPractice={openMistakePractice} />}
     {screen === 'library' && <main className="exam-library">
       <button className="back-link" onClick={() => setScreen('welcome')}><ArrowLeft size={15} /> Home</button>
       <h1>Your exams</h1>
+      <button className="secondary-button" onClick={() => setScreen('statistics')}>Topic statistics</button>
       <button className="secondary-button" disabled={!ready} onClick={() => { setJsonText(''); setError(''); setJsonOpen(true) }}>Import exam</button>
       <button className="secondary-button" disabled={!library.length} onClick={() => {
         const url = URL.createObjectURL(new Blob([JSON.stringify({ format: 'stillroom-library-v1', attempts: library })], { type: 'application/json' }))
@@ -332,7 +361,7 @@ export default function App() {
           </div><div className="question-footer"><div className="footer-note"><span className="keycap">{run.mode === 'washback' ? '01' : '?'}</span>{run.mode === 'washback' ? 'One considered answer. Then the reasoning.' : 'Change your answer until you move on.'}</div><div className="question-actions">{!isMultipleChoice && !committed && <button className="action-button primary" onClick={() => submit(current)} disabled={!(run.responses[current.id] ?? '').trim()}>Submit for review <ArrowRight size={15} /></button>}{run.mode === 'feedback' && (isMultipleChoice || committed) && <button className="action-button secondary" onClick={() => { if (run.index < run.exam.questions.length - 1) updateRun(r => ({ ...r, index: r.index + 1 })); else setConfirmFinish(true) }}>{run.index === run.exam.questions.length - 1 ? 'Finish review' : 'Next question'} <ArrowRight size={15} /></button>}{run.mode === 'washback' && !committed && isMultipleChoice && <><button className="action-button text-action" onClick={() => submit(current, true)}>I don—t know</button><button className="action-button primary" onClick={() => submit(current)} disabled={!selected}>Lock in answer <ArrowRight size={15} /></button></>}{run.mode === 'washback' && committed && <button className="action-button primary" onClick={() => { if (run.committed.length === run.exam.questions.length) { finish() } else updateRun(r => ({ ...r, index: Math.min(r.index + 1, r.exam.questions.length - 1) })) }}>{run.committed.length === run.exam.questions.length ? 'See your reflection' : 'Continue'} <ArrowRight size={15} /></button>}</div></div>
         </section></div></main>}
 
-    {screen === 'results' && run && <main className="results-page"><div className="result-mark"><CheckCheck size={24} /></div><div className="eyebrow">SESSION COMPLETE</div><h1>Good work.<br /><em>Let it settle.</em></h1><p className="result-subtitle">{run.exam.title} — {fmtTime(run.seconds)} of considered work</p><div className="result-score"><span>YOUR SCORE</span><b>{score(run)}<i> / {maxScore}</i></b><div className="result-bar"><i style={{ width: `${maxScore ? score(run) / maxScore * 100 : 0}%` }} /></div><small>{run.exam.questions.filter(q => questionType(q) === 'multiple-choice' ? run.answers[q.id] === q.answer : run.selfGrades[q.id] === 'met').length} of {run.exam.questions.length} self-checked as correct</small></div><div className="result-actions"><button className="primary-button" onClick={() => { start() }}><RotateCcw size={15} /> Try this set again</button><button className="secondary-button" onClick={reset}>Return to your space</button></div><div className="result-quote">—Understanding is not a destination. It is the shape of the next question.—</div></main>}
+    {screen === 'results' && run && <main className="results-page"><div className="result-mark"><CheckCheck size={24} /></div><div className="eyebrow">SESSION COMPLETE</div><h1>Good work.<br /><em>Let it settle.</em></h1><p className="result-subtitle">{run.exam.title} — {fmtTime(run.seconds)} of considered work</p><div className="result-score"><span>YOUR SCORE</span><b>{score(run)}<i> / {maxScore}</i></b><div className="result-bar"><i style={{ width: `${maxScore ? score(run) / maxScore * 100 : 0}%` }} /></div><small>{questionHistory([run]).filter(entry => entry.outcome === 'correct').length} of {run.exam.questions.length} self-checked as correct</small></div><div className="result-actions"><button className="primary-button" onClick={() => { start() }}><RotateCcw size={15} /> Try this set again</button>{questionHistory([run]).some(entry => entry.practice) && <button className="secondary-button" onClick={() => openMistakePractice()}>Practice from mistakes</button>}<button className="secondary-button" onClick={reset}>Return to your space</button></div><div className="result-quote">—Understanding is not a destination. It is the shape of the next question.—</div></main>}
 
     {jsonOpen && <div className="modal-backdrop" onClick={() => setJsonOpen(false)}><section className="json-modal" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">EXAM SOURCE</span><h2>Bring your own questions</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Paste a JSON exam or load a file. Your questions can be on any subject, in any language.</p><button className="file-drop" onClick={() => fileRef.current?.click()}><FileJson2 size={19} /><span><b>Choose a JSON file</b><small>.json — stays on your device</small></span><ArrowRight size={15} /></button><input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={async e => { const file = e.target.files?.[0]; if (file) importJson(await file.text()) }} /><div className="textarea-label">OR PASTE JSON</div><textarea value={jsonText} onChange={e => setJsonText(e.target.value)} placeholder="Paste your exam JSON here—" spellCheck={false} /><div className="modal-bottom">{error && <span className="error-text">{error}</span>}<button className="primary-button" onClick={() => importJson(jsonText)} disabled={!jsonText.trim()}>Use and start exam <ArrowRight size={15} /></button></div><button className="format-link" onClick={() => setJsonText(JSON.stringify(demoExam, null, 2))}>View a complete example format</button></section></div>}
 
@@ -349,6 +378,32 @@ export default function App() {
           setPromptCopied(false)
         }} />
       </label>}
+      {purpose === 'mistakes' && <fieldset className="prompt-style mistake-picker">
+        <legend>Questions to revisit</legend>
+        <label>Filter by topic
+          <select value={mistakeTopic} onChange={event => setMistakeTopic(event.target.value)}>
+            <option value="">All topics</option>
+            {topics.filter(item => item.practice > 0).map(item => <option key={item.key} value={item.key}>{item.topic}</option>)}
+          </select>
+        </label>
+        <p>{mistakes.length ? `${pickedMistakes.length} selected. The prompt includes their questions, answers, and written work.` : 'Questions you missed, skipped, or used hints on will appear here.'}</p>
+        <div className="mistake-options">
+          {mistakes.filter(entry => !mistakeTopic || entry.topicKey === mistakeTopic).map(entry => {
+            const summary = entry.question.prompt.replace(/\s+/g, ' ')
+            return <label key={entry.key}>
+              <input type="checkbox" checked={selectedMistakes.includes(entry.key)} onChange={event => {
+                const checked = event.target.checked
+                setSelectedMistakes(keys => checked ? [...keys, entry.key] : keys.filter(key => key !== entry.key))
+                setPromptCopied(false)
+              }} />
+              <span>
+                <b>{entry.topic}</b> · {entry.skipped ? 'Skipped' : entry.outcome === 'needs review' ? 'Needs review' : 'Used hints'} · {entry.examTitle}
+                <span className="mistake-question">{summary.length > 160 ? `${summary.slice(0, 157)}…` : summary}</span>
+              </span>
+            </label>
+          })}
+        </div>
+      </fieldset>}
       {purpose === 'examples' && <label className="prompt-style">How closely should questions match?
         <select value={relatedness} onChange={e => { setRelatedness(e.target.value as Relatedness); setPromptCopied(false) }}>
           {Object.entries(relatednessLevels).map(([value, { label }]) => <option key={value} value={value}>{label}</option>)}

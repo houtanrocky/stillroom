@@ -15,6 +15,7 @@ The Study purpose menu in the prompt builder shows the source fields for the sel
 ### Study-purpose modes
 
 - **General practice** uses the common exam settings to author questions without source material.
+- **Practice from mistakes** lets the learner select saved questions they missed, skipped, or used hints on. The prompt uses the selected questions and work to request fresh variants and problems that apply the same ideas in different settings.
 
 - **Practice from examples** uses a user-provided set of questions as the source. It offers three relatedness levels: make new questions closely resembling the examples; require the learner to recognize and transfer the underlying idea to meaningfully different questions; or create questions that are difficult to connect to the examples at first glance while remaining within a user-defined subject or scope. Prompts should explicitly define these levels so the LLM varies structure and surface details appropriately without silently changing the intended scope.
 - **Explore beyond my notes** uses user-provided notes to create questions grounded in their concepts while introducing nearby ideas, new operations, variables, or applications. The prompt asks the LLM to identify what is directly supported by the notes and what is an adjacent extension, and to explain any new prerequisite needed. Extensions should remain close enough to be approachable.
@@ -79,3 +80,5 @@ Each question offers an Explain more prompt tailored to its imported question JS
 
 Exams keeps each practice attempt in IndexedDB, including answers, proof grading, progress and attached explanations. Resume unfinished attempts or review a completed attempt and practice it again. The previous active session migrates on first load. History belongs to the current browser profile and can be lost if site data is cleared.
 Download a library backup from Exams and restore it in another profile. Restore adds missing attempts and keeps existing ones.
+
+Topic statistics groups saved questions by the reusable `topic` label requested in every authoring prompt. Older imports without a topic use their exam subject when available. The page counts each attempt separately and shows correct, needs review, ungraded, unanswered, and hint usage. Accuracy uses graded answers. Learners can open Practice from mistakes from a topic or from their results.

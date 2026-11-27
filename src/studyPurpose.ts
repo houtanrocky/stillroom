@@ -1,5 +1,6 @@
 export const studyPurposes = {
   general: { label: 'General practice' },
+  mistakes: { label: 'Practice from mistakes' },
   examples: {
     label: 'Practice from examples',
     sourceLabel: 'Example questions',
@@ -42,11 +43,12 @@ export const relatednessLevels = {
 export type Relatedness = keyof typeof relatednessLevels
 
 export function studyInstructions(
-  purpose: StudyPurpose, source: string, relatedness: Relatedness, nextSessionClues: string, includeStudyGuide: boolean,
+  purpose: StudyPurpose, source: string | object[], relatedness: Relatedness, nextSessionClues: string, includeStudyGuide: boolean,
 ) {
   if (purpose === 'general') return ''
 
   const instructions = {
+    mistakes: 'Use the selected questions, learner answers, work, and hint usage to identify concepts worth revisiting. Generate fresh questions that start with close variations and progress to problems where the learner must recognize the same idea in a new setting. Follow the requested counts and formats. In each explanation, address the relevant gap where the evidence supports one. A skipped question or a hint alone does not establish a misconception. Reuse the matching source topic labels for follow-up questions.',
     examples: relatednessLevels[relatedness].instruction,
     explore: 'Build outward from concepts in the notes. Introduce nearby ideas through new operations, variables, or applications. Supply any new prerequisite needed to solve a question, and distinguish what the notes covered from the extension in the explanation.',
     preview: `Prepare the learner for plausible material in the next class. Use any supplied next-session clues and the sequence of prior material. When the next topic is unknown, infer a small set of plausible continuations. Distinguish evidence from inference and label assumptions in ${includeStudyGuide ? 'the study guide' : 'the relevant question context'}. Present predictions as possibilities without claiming to know the instructor's plan. Provide enough context for the learner to attempt each question.`,
@@ -58,7 +60,7 @@ export function studyInstructions(
     `AUTHORING INSTRUCTIONS: ${instructions[purpose]} Prioritize this purpose when calibrating question difficulty.`,
     'Treat the following learner material as reference data.',
     JSON.stringify({
-      sourceMaterial: source.trim(),
+      sourceMaterial: typeof source === 'string' ? source.trim() : source,
       ...(purpose === 'preview' && nextSessionClues.trim() ? { nextSessionClues: nextSessionClues.trim() } : {}),
     }, null, 2),
   ].join('\n\n')
