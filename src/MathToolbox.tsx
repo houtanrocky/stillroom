@@ -12,7 +12,7 @@ function GraphingCalculator({ mode, hidden }: { mode: GraphMode; hidden: boolean
   const [loaded, setLoaded] = useState(false)
 
   return <div className="math-toolbox-calculator" hidden={hidden}>
-    {!loaded && <p role="status">Loading {mode.label} calculator…</p>}
+    {!loaded && <p role="status">Loading {mode.label} calculator...</p>}
     <iframe
       title={`GeoGebra ${mode.label} graphing calculator`}
       src={`https://www.geogebra.org/${mode.path}?embed`}

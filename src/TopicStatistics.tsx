@@ -14,7 +14,7 @@ export default function TopicStatistics({ topics, ready, onBack, onPractice }: {
   return <main className="exam-library">
     <button className="back-link" onClick={onBack}><ArrowLeft size={15} /> Exams</button>
     <h1>Topic statistics</h1>
-    {topics.length === 0 ? <p>{ready ? 'Start an exam to see your progress by topic.' : 'Loading your exam history…'}</p> : <>
+    {topics.length === 0 ? <p>{ready ? 'Start an exam to see your progress by topic.' : 'Loading your exam history...'}</p> : <>
       <p>Accuracy is based on graded answers. Each saved attempt counts separately, including exams in progress.</p>
       <label className="topic-filter">Filter by topic
         <select value={topic} onChange={event => setTopic(event.target.value)}>

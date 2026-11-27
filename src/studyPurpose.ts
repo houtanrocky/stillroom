@@ -19,7 +19,7 @@ export const studyPurposes = {
   review: {
     label: "Review today's lesson",
     sourceLabel: "Today's lesson material",
-    placeholder: 'Paste the notes, topics, or worked examples from today’s class.',
+    placeholder: 'Paste the notes, topics, or worked examples from today\'s class.',
   },
 }
 
@@ -52,7 +52,7 @@ export function studyInstructions(
     examples: relatednessLevels[relatedness].instruction,
     explore: 'Build outward from concepts in the notes. Introduce nearby ideas through new operations, variables, or applications. Supply any new prerequisite needed to solve a question, and distinguish what the notes covered from the extension in the explanation.',
     preview: `Prepare the learner for plausible material in the next class. Use any supplied next-session clues and the sequence of prior material. When the next topic is unknown, infer a small set of plausible continuations. Distinguish evidence from inference and label assumptions in ${includeStudyGuide ? 'the study guide' : 'the relevant question context'}. Present predictions as possibilities without claiming to know the instructor's plan. Provide enough context for the learner to attempt each question.`,
-    review: 'Create lightly challenging same-day practice using the lesson’s core ideas. Start with retrieval and move toward simple application or a small variation. Keep prerequisites and methods within the material taught and give a worked solution after each attempt.',
+    review: 'Create lightly challenging same-day practice using the lesson\'s core ideas. Start with retrieval and move toward simple application or a small variation. Keep prerequisites and methods within the material taught and give a worked solution after each attempt.',
   }
 
   return [
