@@ -253,6 +253,17 @@
 .confirm-modal { position: fixed; inset: 0; height: fit-content; max-width: calc(100% - 28px); color: var(--ink); }
 .confirm-modal h2 { margin-top: 0; color: var(--ink); }
 
+.exam-prompt-backdrop { grid-template: minmax(0, 1fr) / minmax(0, 1fr); padding: clamp(8px, 3%, 20px); }
+.exam-prompt-modal { display: flex; flex-direction: column; max-height: min(100%, 900px); overflow: hidden; }
+.exam-prompt-modal > .modal-heading, .exam-prompt-modal > .prompt-actions { flex: none; }
+.exam-prompt-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding-inline: 3px; margin-inline: -3px; }
+.exam-prompt-modal > .prompt-actions { flex-wrap: wrap; }
+.exam-prompt-modal > .prompt-actions button { height: auto; min-height: 37px; }
+
+.app-update { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 14px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--moss-pale); }
+.app-update p { margin: 0; font-size: 13px; }
+.app-update button { height: 36px; }
+
 .question-stage, .answer-review { scroll-margin-top: 12px; }
 .question-stage { animation: none; }
 .question-stage:focus, .answer-review:focus { outline: none; }
