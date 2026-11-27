@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, CircleHelp, Clock3, Copy, FileJson2, Focus, Layers2, Lightbulb, LockKeyhole, Moon, Pause, Play, Plus, RotateCcw, Sparkles, Sun, X, Minus } from 'lucide-react'
 import { demoExam, parseExam, type Exam, type Question, type QuestionType } from './exam'
 import MathToolbox from './MathToolbox'
+import { relatednessLevels, studyInstructions, studyPurposes, type Relatedness, type StudyPurpose } from './studyPurpose'
 
 type Screen = 'library' | 'welcome' | 'run' | 'results'
 export type RunData = { id: string; updated: number; completed?: boolean; exam: Exam; mode: Exam['mode']; index: number; answers: Record<string, string>; responses: Record<string, string>; selfGrades: Record<string, 'met' | 'review'>; committed: string[]; hints: Record<string, number>; work: Record<string, string>; revealedChoices: string[]; explanations: Record<string, string>; seconds: number; paused: boolean; studyGuideOpen: boolean }
@@ -28,7 +29,7 @@ function SafeDiagram({ diagram }: { diagram: any }) {
   if (typeof diagram.viewBox !== 'string' || !/^0 0 [\d.]+ [\d.]+$/.test(diagram.viewBox) || !Array.isArray(diagram.elements)) return null
   return <figure className="explanation-diagram"><figcaption>{String(diagram.title || 'Diagram')}</figcaption><svg viewBox={diagram.viewBox} role="img" aria-label={String(diagram.title || 'Explanation diagram')}>{diagram.elements.slice(0, 100).map((el: any, i: number) => { if (!allowed.has(el.shape)) return null; const props = Object.fromEntries(attrs.filter(k => el[k] !== undefined && (typeof el[k] === 'number' || (['fill','stroke','d','points'].includes(k) && typeof el[k] === 'string'))).map(k => [k, el[k]])); return el.shape === 'text' ? <text key={i} {...props}>{String(el.text || '').slice(0, 80)}</text> : el.shape === 'line' ? <line key={i} {...props} /> : el.shape === 'circle' ? <circle key={i} {...props} /> : el.shape === 'rect' ? <rect key={i} {...props} /> : el.shape === 'path' ? <path key={i} {...props} /> : <polygon key={i} {...props} /> })}</svg></figure>
 }
-function makePrompt(spec: PromptSpec) {
+function makePrompt(spec: PromptSpec, instructions: string) {
   const total = Object.values(spec.questionCounts).reduce((sum, count) => sum + count, 0)
   const selectedTypes = (Object.keys(spec.questionCounts) as QuestionType[]).filter(type => spec.questionCounts[type] > 0)
   const sampleQuestion = (type: QuestionType) => type === 'multiple-choice' ? {
@@ -60,6 +61,7 @@ function makePrompt(spec: PromptSpec) {
   return [
     'You are an expert exam author and careful subject-matter reviewer.',
     'Create the requested exam and return exactly one valid JSON object matching the schema below. Output JSON only: no introduction, explanation, Markdown code fence, or trailing text.',
+    instructions,
     `SUBJECT / TOPIC: ${spec.subject}`,
     `LEARNING GOAL: ${spec.goal}`,
     `LEVEL: ${spec.level}`,
@@ -74,7 +76,7 @@ function makePrompt(spec: PromptSpec) {
       : 'FEEDBACK RULES: Set hints to an empty array for each question. Make the explanation informative enough for immediate feedback after a choice.',
     `JSON SHAPE EXAMPLES (one example for every selected type; replace sample content and produce exactly ${total} questions with the type counts above):`,
     JSON.stringify(sample, null, 2),
-  ].join('\n\n')
+  ].filter(Boolean).join('\n\n')
 }
 
 export default function App() {
@@ -94,7 +96,11 @@ export default function App() {
   const [confirmFinish, setConfirmFinish] = useState(false)
   const [focus, setFocus] = useState(false)
   const [promptOpen, setPromptOpen] = useState(false)
-  const [promptSpec, setPromptSpec] = useState<PromptSpec>(defaultPrompt)
+  const [promptSpec, setPromptSpec] = useState<PromptSpec>({ ...defaultPrompt, subject: '', goal: '', level: '', style: '' })
+  const [purpose, setPurpose] = useState<StudyPurpose>('general')
+  const [sourceDrafts, setSourceDrafts] = useState<Partial<Record<StudyPurpose, string>>>({})
+  const [relatedness, setRelatedness] = useState<Relatedness>('close')
+  const [nextSessionClues, setNextSessionClues] = useState('')
   const [promptCopied, setPromptCopied] = useState(false)
   const [explainOpen, setExplainOpen] = useState(false)
   const [explainRequest, setExplainRequest] = useState('')
@@ -119,13 +125,24 @@ export default function App() {
     return { ...spec, hideOptionsUntilWork: type === 'multiple-choice' && nextValue === 0 ? false : spec.hideOptionsUntilWork, questionCounts: { ...spec.questionCounts, [type]: Math.max(0, Math.min(60 - otherTotal, Number.isFinite(nextValue) ? nextValue : 1)) } }
   })
 
+  const source = sourceDrafts[purpose] ?? ''
+  const purposeDetails = studyPurposes[purpose]
+  const promptReady = purpose === 'general' || Boolean(source.trim())
+  const prompt = promptOpen && promptReady ? makePrompt({
+    ...promptSpec,
+    subject: promptSpec.subject.trim() || (purpose === 'general' ? defaultPrompt.subject : 'Infer the subject from the learner material'),
+    goal: promptSpec.goal.trim() || (purpose === 'general' ? defaultPrompt.goal : purposeDetails.label),
+    level: promptSpec.level.trim() || (purpose === 'general' ? defaultPrompt.level : 'Match the learner material'),
+    style: promptSpec.style.trim() || (purpose === 'general' ? defaultPrompt.style : 'Follow the study purpose'),
+  }, studyInstructions(purpose, source, relatedness, nextSessionClues, promptSpec.includeStudyGuide)) : ''
+
   const copyPrompt = async () => {
-    const text = makePrompt(promptSpec)
+    if (!prompt) return
     try {
-      await navigator.clipboard.writeText(text)
+      await navigator.clipboard.writeText(prompt)
     } catch {
       promptRef.current?.select()
-      document.execCommand('copy')
+      if (!document.execCommand('copy')) return
     }
     setPromptCopied(true)
     window.setTimeout(() => setPromptCopied(false), 2200)
@@ -319,7 +336,31 @@ export default function App() {
 
     {jsonOpen && <div className="modal-backdrop" onClick={() => setJsonOpen(false)}><section className="json-modal" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">EXAM SOURCE</span><h2>Bring your own questions</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Paste a JSON exam or load a file. Your questions can be on any subject, in any language.</p><button className="file-drop" onClick={() => fileRef.current?.click()}><FileJson2 size={19} /><span><b>Choose a JSON file</b><small>.json — stays on your device</small></span><ArrowRight size={15} /></button><input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={async e => { const file = e.target.files?.[0]; if (file) importJson(await file.text()) }} /><div className="textarea-label">OR PASTE JSON</div><textarea value={jsonText} onChange={e => setJsonText(e.target.value)} placeholder="Paste your exam JSON here—" spellCheck={false} /><div className="modal-bottom">{error && <span className="error-text">{error}</span>}<button className="primary-button" onClick={() => importJson(jsonText)} disabled={!jsonText.trim()}>Use and start exam <ArrowRight size={15} /></button></div><button className="format-link" onClick={() => setJsonText(JSON.stringify(demoExam, null, 2))}>View a complete example format</button></section></div>}
 
-    {promptOpen && <div className="modal-backdrop" onClick={() => setPromptOpen(false)}><section className="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow"><Sparkles size={12} /> PROMPT STUDIO</span><h2 id="prompt-title">Shape your next exam</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Set the scope. Your copy-ready instruction updates as you edit. Paste it into your preferred LLM, then bring its JSON response back here.</p><div className="prompt-fields"><label>Subject or topic<input value={promptSpec.subject} onChange={e => setPromptSpec(s => ({ ...s, subject: e.target.value }))} placeholder="e.g. Advanced linear algebra" /></label><label>Learning goal<textarea rows={2} value={promptSpec.goal} onChange={e => setPromptSpec(s => ({ ...s, goal: e.target.value }))} /></label><label>Level<input value={promptSpec.level} onChange={e => setPromptSpec(s => ({ ...s, level: e.target.value }))} /></label><div className="prompt-counts"><span>Questions by type <small>{Object.values(promptSpec.questionCounts).reduce((sum, value) => sum + value, 0)} total · maximum 60</small></span><div className="prompt-count-grid">{([ ["multiple-choice", "Multiple choice"], ["short-answer", "Short answer"], ["free-response", "Written response"], ["proof", "Proof"] ] as [QuestionType, string][]).map(([type, label]) => <label key={type}><span>{label}</span><input aria-label={`${label} question count`} type="number" min={0} max={60} value={promptSpec.questionCounts[type]} onChange={e => updateQuestionCount(type, Number(e.target.value))} /></label>)}</div></div><label>Exam mode<select value={promptSpec.mode} onChange={e => setPromptSpec(s => ({ ...s, mode: e.target.value as Exam['mode'] }))}><option value="washback">Washback — one at a time, hints cost points</option><option value="feedback">Feedback — explore and revise answers</option></select></label>{promptSpec.questionCounts['multiple-choice'] > 0 && <label>Options per multiple-choice question<input type="number" min={2} max={8} value={promptSpec.choicesPerQuestion} onChange={e => setPromptSpec(s => ({ ...s, choicesPerQuestion: Math.max(2, Math.min(8, Number(e.target.value) || 2)) }))} /></label>}<label className="prompt-style">Question style<textarea rows={2} value={promptSpec.style} onChange={e => setPromptSpec(s => ({ ...s, style: e.target.value }))} /></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.hideOptionsUntilWork} disabled={promptSpec.questionCounts["multiple-choice"] === 0} onChange={e => setPromptSpec(s => ({ ...s, hideOptionsUntilWork: e.target.checked }))} /><span><b>Solve before seeing choices</b><small>Ask me to write my result before revealing multiple-choice options.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeReferences} onChange={e => setPromptSpec(s => ({ ...s, includeReferences: e.target.checked }))} /><span><b>Suggest books and chapters</b><small>Include relevant textbook chapters and sections.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeStudyGuide} onChange={e => setPromptSpec(s => ({ ...s, includeStudyGuide: e.target.checked }))} /><span><b>Include a short study guide</b><small>Show notes before questions and allow switching between them.</small></span></label></div><div className="prompt-preview-head"><span className="textarea-label">LIVE PROMPT PREVIEW</span><span>JSON-only output — app schema included</span></div><textarea ref={promptRef} className="prompt-preview" value={makePrompt(promptSpec)} readOnly spellCheck={false} onFocus={e => e.currentTarget.select()} /><div className="prompt-actions"><button className="secondary-button" onClick={() => { setPromptOpen(false); setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={14} /> I have the JSON</button><button className="primary-button" onClick={copyPrompt}><Copy size={14} /> {promptCopied ? 'Copied — paste into your LLM' : 'Copy prompt'}</button></div></section></div>}
+    {promptOpen && <div className="modal-backdrop" onClick={() => setPromptOpen(false)}><section className="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow"><Sparkles size={12} /> PROMPT STUDIO</span><h2 id="prompt-title">Shape your next exam</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Set the scope. Your copy-ready instruction updates as you edit. Paste it into your preferred LLM, then bring its JSON response back here.</p><div className="prompt-fields">
+      <label className="prompt-style">Study purpose
+        <select value={purpose} onChange={e => { setPurpose(e.target.value as StudyPurpose); setPromptCopied(false) }}>
+          {Object.entries(studyPurposes).map(([value, { label }]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
+      {'sourceLabel' in purposeDetails && <label className="prompt-style">{purposeDetails.sourceLabel} (required)
+        <textarea rows={4} value={source} required placeholder={purposeDetails.placeholder} onChange={e => {
+          const value = e.target.value
+          setSourceDrafts(drafts => ({ ...drafts, [purpose]: value }))
+          setPromptCopied(false)
+        }} />
+      </label>}
+      {purpose === 'examples' && <label className="prompt-style">How closely should questions match?
+        <select value={relatedness} onChange={e => { setRelatedness(e.target.value as Relatedness); setPromptCopied(false) }}>
+          {Object.entries(relatednessLevels).map(([value, { label }]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>}
+      {purpose === 'preview' && <label className="prompt-style">Clues about the next session (optional)
+        <textarea rows={2} value={nextSessionClues} placeholder="Paste a syllabus excerpt or an upcoming topic." onChange={e => {
+          setNextSessionClues(e.target.value)
+          setPromptCopied(false)
+        }} />
+      </label>}
+      <label>Subject or topic<input value={promptSpec.subject} onChange={e => setPromptSpec(s => ({ ...s, subject: e.target.value }))} placeholder={purpose === 'general' ? defaultPrompt.subject : 'Infer from your material'} /></label><label>Learning goal<textarea rows={2} placeholder={purpose === 'general' ? defaultPrompt.goal : 'Optional focus for this set'} value={promptSpec.goal} onChange={e => setPromptSpec(s => ({ ...s, goal: e.target.value }))} /></label><label>Level<input placeholder={purpose === 'general' ? defaultPrompt.level : 'Match your material'} value={promptSpec.level} onChange={e => setPromptSpec(s => ({ ...s, level: e.target.value }))} /></label><div className="prompt-counts"><span>Questions by type <small>{Object.values(promptSpec.questionCounts).reduce((sum, value) => sum + value, 0)} total · maximum 60</small></span><div className="prompt-count-grid">{([ ["multiple-choice", "Multiple choice"], ["short-answer", "Short answer"], ["free-response", "Written response"], ["proof", "Proof"] ] as [QuestionType, string][]).map(([type, label]) => <label key={type}><span>{label}</span><input aria-label={`${label} question count`} type="number" min={0} max={60} value={promptSpec.questionCounts[type]} onChange={e => updateQuestionCount(type, Number(e.target.value))} /></label>)}</div></div><label>Exam mode<select value={promptSpec.mode} onChange={e => setPromptSpec(s => ({ ...s, mode: e.target.value as Exam['mode'] }))}><option value="washback">Washback — one at a time, hints cost points</option><option value="feedback">Feedback — explore and revise answers</option></select></label>{promptSpec.questionCounts['multiple-choice'] > 0 && <label>Options per multiple-choice question<input type="number" min={2} max={8} value={promptSpec.choicesPerQuestion} onChange={e => setPromptSpec(s => ({ ...s, choicesPerQuestion: Math.max(2, Math.min(8, Number(e.target.value) || 2)) }))} /></label>}<label className="prompt-style">Question style<textarea rows={2} placeholder={purpose === 'general' ? defaultPrompt.style : 'Optional style preferences'} value={promptSpec.style} onChange={e => setPromptSpec(s => ({ ...s, style: e.target.value }))} /></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.hideOptionsUntilWork} disabled={promptSpec.questionCounts["multiple-choice"] === 0} onChange={e => setPromptSpec(s => ({ ...s, hideOptionsUntilWork: e.target.checked }))} /><span><b>Solve before seeing choices</b><small>Ask me to write my result before revealing multiple-choice options.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeReferences} onChange={e => setPromptSpec(s => ({ ...s, includeReferences: e.target.checked }))} /><span><b>Suggest books and chapters</b><small>Include relevant textbook chapters and sections.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeStudyGuide} onChange={e => setPromptSpec(s => ({ ...s, includeStudyGuide: e.target.checked }))} /><span><b>Include a short study guide</b><small>Show notes before questions and allow switching between them.</small></span></label></div><div className="prompt-preview-head"><span className="textarea-label">LIVE PROMPT PREVIEW</span><span>JSON-only output — app schema included</span></div><textarea ref={promptRef} className="prompt-preview" aria-label="Live prompt preview" value={prompt} placeholder="Add the required material to see your prompt." readOnly spellCheck={false} onFocus={e => e.currentTarget.select()} /><div className="prompt-actions"><button className="secondary-button" onClick={() => { setPromptOpen(false); setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={14} /> I have the JSON</button><button className="primary-button" onClick={copyPrompt} disabled={!promptReady}><Copy size={14} /> {promptCopied ? 'Copied — paste into your LLM' : 'Copy prompt'}</button></div></section></div>}
 
     {explainOpen && current && <div className="modal-backdrop" onClick={() => setExplainOpen(false)}><section className="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="explain-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow"><Sparkles size={12} /> QUESTION SUPPORT</span><h2 id="explain-title">Explain this question</h2></div><button className="icon-button" onClick={() => setExplainOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Copy this question-specific prompt into your LLM. Then paste its JSON explanation below. It will be saved with this session on this device.</p><label className="explain-request-label">What would you like explained?<textarea className="explain-request" rows={3} value={explainRequest} onChange={e => setExplainRequest(e.target.value)} placeholder="For example: What does invariant complement mean here?" /></label><div className="prompt-preview-head"><span className="textarea-label">PROMPT PREVIEW</span><span>Question data and render protocol included</span></div><textarea className="prompt-preview" readOnly value={explanationPrompt} onFocus={e => e.currentTarget.select()} /><div className="explain-response-label">LLM JSON RESPONSE</div><textarea className="explain-response" value={run.explanations?.[current.id] ?? ''} onChange={e => updateRun(r => ({ ...r, explanations: { ...r.explanations, [current.id]: e.target.value } }))} placeholder={'Paste JSON using protocol "stillroom.explanation.v1"'} spellCheck={false} /><div className="prompt-actions"><button className="secondary-button" onClick={copyExplanationPrompt}><Copy size={14} /> {explainCopied ? 'Copied' : 'Copy prompt'}</button><button className="primary-button" onClick={() => setExplainOpen(false)}>Save explanation <Check size={14} /></button></div></section></div>}
 

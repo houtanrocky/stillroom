@@ -8,7 +8,20 @@ The primary user is the owner practicing advanced linear algebra, including diff
 
 ## LLM authoring workflow
 
-The start page should help a user prepare a useful prompt for an LLM. The prompt builder asks for the exam subject or topic, learning goal, difficulty, exam mode, preferred question style, and an exact count for each selected question type: multiple choice, short answer, free response, and proof. The total question count updates from these per-type counts, and the prompt requires the LLM to return exactly that distribution. Every generated question must include a `type` field so the runner can show its matching answer layout. The builder also asks how many options each multiple-choice item should have. Its output updates as the user edits these fields and can be copied with one action.
+The start page should help a user prepare a useful prompt for an LLM. The prompt builder asks for the study purpose, the source material required by that purpose, the subject or topic, learning goal, difficulty, exam mode, preferred question style, and an exact count for each selected question type: multiple choice, short answer, free response, and proof. The total question count updates from these per-type counts, and the prompt requires the LLM to return exactly that distribution. Every generated question must include a `type` field so the runner can show its matching answer layout. The builder also asks how many options each multiple-choice item should have. Its output updates as the user edits these fields and can be copied with one action.
+
+The Study purpose menu in the prompt builder shows the source fields for the selected purpose. Study purpose determines the LLM's authoring instructions. Exam mode controls how the generated set is taken (washback or feedback). Switching purposes preserves common settings such as subject, question count, and question formats. Each purpose keeps its own source draft while the app is open.
+
+### Study-purpose modes
+
+- **General practice** uses the common exam settings to author questions without source material.
+
+- **Practice from examples** uses a user-provided set of questions as the source. It offers three relatedness levels: make new questions closely resembling the examples; require the learner to recognize and transfer the underlying idea to meaningfully different questions; or create questions that are difficult to connect to the examples at first glance while remaining within a user-defined subject or scope. Prompts should explicitly define these levels so the LLM varies structure and surface details appropriately without silently changing the intended scope.
+- **Explore beyond my notes** uses user-provided notes to create questions grounded in their concepts while introducing nearby ideas, new operations, variables, or applications. The prompt asks the LLM to identify what is directly supported by the notes and what is an adjacent extension, and to explain any new prerequisite needed. Extensions should remain close enough to be approachable.
+- **Preview the next session** uses notes or material from completed sessions, plus any known topic, course outline, or upcoming-session clues the user can provide. It creates plausible questions about material that could come next, to help the learner prepare. The LLM should label predictions as possibilities, distinguish evidence from speculation, and avoid claiming certainty about an instructor's plan. If the next topic is unknown, it should infer a small set of plausible continuations from the supplied material and state those assumptions in the exam's study guide or question context.
+- **Review today's lesson** uses material taught in the current session, such as notes, a lesson summary, or covered topics. It creates same-day retrieval and application practice that reinforces the material, with a modest challenge above simple recall. It should prioritize the lesson's core ideas and avoid introducing substantial untaught material.
+
+The source fields accept pasted text. The preview and copy action become available once the required material is entered. The generated prompt includes that material and the instructions for the selected purpose. Common exam settings remain available for every purpose.
 
 The generated instruction must request exactly one clean JSON object: no prose before or after it, no Markdown fences, and no unrequested keys. It must include the exact application schema, require unique question and choice IDs, require each answer ID to match a choice, and request plausible distractors, one unambiguous correct answer, a worked explanation, and a keyed explanation for every incorrect choice. Mathematical content must use delimited LaTeX so it renders in the app. For washback exams, it requests progressively revealing hint levels with explicit point costs. The prompt builder includes an option to hide choices until the learner records a free-form result. The user copies the LLM's response and pastes it into the exam importer; the app finds the exam object even if the LLM adds surrounding prose, Markdown fences, or a common wrapper such as `{"exam": ...}`. It then trims unknown properties from the exam, question, choice, and hint objects while validating the fields the app needs. Extra material is tolerated, but missing or malformed required exam data still produces a clear error.
 
@@ -50,7 +63,7 @@ The supplied exam page at `https://azmoon.konkurcomputer.ir/azmoon/run` was open
 - Demo advanced linear algebra exam to make the experience usable on first launch.
 - Washback and feedback session flows.
 - JSON file and paste import with validation.
-- LLM prompt builder with live preview and copy action.
+- LLM prompt builder with study purposes, a live preview, and a copy action.
 - Markdown and KaTeX rendering for mathematical questions.
 - Local autosave, timer, focus mode, scoring, and result summary.
 
