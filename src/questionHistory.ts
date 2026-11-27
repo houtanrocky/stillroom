@@ -1,5 +1,5 @@
 import type { RunData } from './App'
-import type { Question } from './exam'
+import type { Exam, Question } from './exam'
 
 type Outcome = 'correct' | 'needs review' | 'ungraded' | 'unanswered'
 
@@ -41,6 +41,40 @@ export function questionHistory(attempts: RunData[]) {
 }
 
 export type QuestionHistoryEntry = ReturnType<typeof questionHistory>[number]
+
+export const reviewLimit = 5
+export type ReviewHistory = Record<string, { answer?: string; work?: string }>
+
+export function buildReview(attempts: RunData[]) {
+  const latest = new Map<string, { entry: QuestionHistoryEntry; updated: number; points: number }>()
+  for (const attempt of [...attempts].sort((a, b) => b.updated - a.updated)) {
+    for (const entry of questionHistory([attempt])) {
+      if (!entry.practice && entry.outcome !== 'correct') continue
+      const { question } = entry
+      // Exam question IDs are local to each exam. Review copies use new IDs.
+      const type = question.type ?? (question.choices.length ? 'multiple-choice' : 'short-answer')
+      const key = JSON.stringify([type, question.prompt,
+        question.choices.map(choice => choice.text).sort(), modelAnswer(question)])
+      if (!latest.has(key)) latest.set(key, { entry, updated: attempt.updated, points: question.points ?? attempt.exam.pointsPerQuestion ?? 100 })
+    }
+  }
+
+  const priority = (entry: QuestionHistoryEntry) => Number(entry.outcome === 'needs review' || entry.skipped)
+  const selected = [...latest.values()].filter(({ entry }) => entry.practice)
+    .sort((a, b) => priority(b.entry) - priority(a.entry) || a.updated - b.updated)
+    .slice(0, reviewLimit)
+  const previous: ReviewHistory = {}
+  const questions = selected.map(({ entry, points }, index) => {
+    const id = `review-${index + 1}`
+    previous[id] = {
+      answer: typeof entry.learnerAnswer === 'string' ? entry.learnerAnswer : undefined,
+      work: typeof entry.writtenWork === 'string' ? entry.writtenWork : undefined,
+    }
+    return { ...entry.question, id, points, topic: entry.topic }
+  })
+  const exam: Exam = { title: 'Question review', mode: 'washback', questions }
+  return { exam, previous }
+}
 
 export function topicStatistics(history: QuestionHistoryEntry[]) {
   const topics = new Map<string, { topic: string; correct: number; review: number; ungraded: number; unanswered: number; hinted: number; practice: number }>()

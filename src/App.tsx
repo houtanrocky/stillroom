@@ -1,14 +1,14 @@
 import { listAttempts, saveAttempt } from './library'
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, CircleHelp, Clock3, Copy, FileJson2, Focus, Layers2, Lightbulb, LockKeyhole, Moon, Pause, Play, Plus, RotateCcw, Sparkles, Sun, X, Minus } from 'lucide-react'
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, CircleHelp, Clock3, Copy, FileJson2, Focus, Layers2, Lightbulb, Moon, Pause, Play, Plus, RotateCcw, Sun, X, Minus } from 'lucide-react'
 import { demoExam, parseExam, type Exam, type Question, type QuestionType } from './exam'
 import MathToolbox from './MathToolbox'
 import { relatednessLevels, studyInstructions, studyPurposes, type Relatedness, type StudyPurpose } from './studyPurpose'
-import { mistakeSource, questionHistory, topicStatistics } from './questionHistory'
+import { buildReview, mistakeSource, questionHistory, reviewLimit, topicStatistics, type ReviewHistory } from './questionHistory'
 import TopicStatistics from './TopicStatistics'
 
 type Screen = 'library' | 'welcome' | 'run' | 'results' | 'statistics'
-export type RunData = { id: string; updated: number; completed?: boolean; exam: Exam; mode: Exam['mode']; index: number; answers: Record<string, string>; responses: Record<string, string>; selfGrades: Record<string, 'met' | 'review'>; committed: string[]; hints: Record<string, number>; work: Record<string, string>; revealedChoices: string[]; explanations: Record<string, string>; seconds: number; paused: boolean; studyGuideOpen: boolean }
+export type RunData = { id: string; updated: number; completed?: boolean; exam: Exam; mode: Exam['mode']; index: number; answers: Record<string, string>; responses: Record<string, string>; selfGrades: Record<string, 'met' | 'review'>; committed: string[]; hints: Record<string, number>; work: Record<string, string>; revealedChoices: string[]; explanations: Record<string, string>; seconds: number; paused: boolean; studyGuideOpen: boolean; review?: ReviewHistory }
 type PromptSpec = { subject: string; goal: string; level: string; mode: Exam['mode']; style: string; hideOptionsUntilWork: boolean; includeReferences: boolean; includeStudyGuide: boolean; questionCounts: Record<QuestionType, number>; choicesPerQuestion: number }
 const defaultPrompt: PromptSpec = { subject: 'Advanced linear algebra', goal: 'Test deep understanding of linear maps, canonical forms, duality, and the hypotheses behind major theorems.', level: 'Advanced graduate', mode: 'washback', style: 'Difficult but fair. Favor proof insight, counterexamples, subtle assumptions, and calculations that reveal conceptual gaps.', hideOptionsUntilWork: false, includeReferences: false, includeStudyGuide: false, questionCounts: { 'multiple-choice': 0, 'short-answer': 6, 'free-response': 0, proof: 4 }, choicesPerQuestion: 4 }
 const questionType = (q: Question): QuestionType => q.type ?? (q.choices.length ? 'multiple-choice' : 'short-answer')
@@ -18,6 +18,51 @@ const RichText = lazy(() => import('./RichText'))
 function Content({ text, className = '' }: { text: string; className?: string }) {
   return <Suspense fallback={<div className={`rich-text ${className}`}>{text}</div>}><RichText text={text} className={className} /></Suspense>
 }
+
+function AnswerComparison({ response, model, proof }: { response: string; model: string; proof: boolean }) {
+  const id = useId()
+  const [compact, setCompact] = useState(() => window.matchMedia('(max-width: 650px)').matches)
+  const [showModel, setShowModel] = useState(false)
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 650px)')
+    const update = () => setCompact(media.matches)
+    media.addEventListener('change', update)
+    document.addEventListener('visibilitychange', update)
+    return () => {
+      media.removeEventListener('change', update)
+      document.removeEventListener('visibilitychange', update)
+    }
+  }, [])
+  const panels = [
+    { key: 'your', label: proof ? 'Your proof' : 'Your answer', text: response },
+    { key: 'model', label: proof ? 'Model proof' : 'Model answer', text: model },
+  ]
+  return <div className="answer-comparison">
+    <div className="choice-switch comparison-switch" role="tablist" aria-label="Compare answers" onKeyDown={event => {
+      const { key } = event
+      if (key !== 'Home' && key !== 'End' && key !== 'ArrowLeft' && key !== 'ArrowRight') return
+      const next = key !== 'Home' && (key === 'End' || !showModel)
+      event.preventDefault()
+      setShowModel(next)
+      document.getElementById(`${id}-${next ? 'model' : 'your'}-tab`)?.focus()
+    }}>
+      {panels.map(({ key, label }) => <button key={key} role="tab" id={`${id}-${key}-tab`} aria-controls={`${id}-${key}-panel`}
+        aria-selected={showModel === (key === 'model')} tabIndex={showModel === (key === 'model') ? 0 : -1}
+        onClick={() => setShowModel(key === 'model')}>{label}</button>)}
+    </div>
+    <div className="comparison-columns">
+      {panels.map(({ key, label, text }) => <section key={key} className="comparison-panel" id={`${id}-${key}-panel`}
+        role={compact ? 'tabpanel' : undefined} aria-labelledby={compact ? `${id}-${key}-tab` : undefined}
+        tabIndex={compact ? 0 : undefined} data-selected={showModel === (key === 'model')}>
+        <h3>{label}</h3><Content text={text} />
+      </section>)}
+    </div>
+  </div>
+}
+
+const reviewLabel = (count: number) => `Review ${count} ${count === 1 ? 'question' : 'questions'}`
+const answeredCount = (attempt: RunData) => questionHistory([attempt]).filter(entry => entry.outcome !== 'unanswered').length
+
 function ExplanationDocument({ raw, questionId }: { raw: string; questionId: string }) {
   try {
     const doc = JSON.parse(raw)
@@ -90,9 +135,9 @@ export default function App() {
     try { return localStorage.getItem('stillroom.theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' }
   })
   const [screen, setScreen] = useState<Screen>('welcome')
-  const [exam, setExam] = useState<Exam>(demoExam)
   const [mode, setMode] = useState<Exam['mode']>(demoExam.mode)
   const [run, setRun] = useState<RunData | null>(null)
+  const [examFilter, setExamFilter] = useState<'all' | 'in-progress' | 'completed'>('all')
   const [error, setError] = useState('')
   const [jsonOpen, setJsonOpen] = useState(false)
   const [jsonText, setJsonText] = useState('')
@@ -113,6 +158,14 @@ export default function App() {
   const [explanationExpanded, setExplanationExpanded] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const questionMapRef = useRef<HTMLDialogElement>(null)
+  const finishDialogRef = useRef<HTMLDialogElement>(null)
+  const questionStageRef = useRef<HTMLElement>(null)
+  const answerReviewRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (confirmFinish) finishDialogRef.current?.showModal()
+  }, [confirmFinish])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -131,7 +184,16 @@ export default function App() {
   })
 
   const [library, setLibrary] = useState<RunData[]>([])
+  const review = useMemo(() => screen === 'welcome' ? buildReview(library) : null, [library, screen])
+  const reviewCount = review?.exam.questions.length ?? 0
+  const unfinished = run && !run.completed ? run : null
+  const pendingReview = unfinished?.review ? unfinished : library.find(item => item.id !== run?.id && item.review && !item.completed)
+  const pendingExam = unfinished && !unfinished.review ? unfinished : library.find(item => item.id !== run?.id && !item.review && !item.completed)
+  const visibleAttempts = library.filter(item => examFilter === 'all' || Boolean(item.completed) === (examFilter === 'completed'))
   const resultAttempt = screen === 'results' ? run : null
+  const resultHistory = useMemo(() => resultAttempt ? questionHistory([resultAttempt]) : [], [resultAttempt])
+  const resultReview = useMemo(() => resultAttempt ? buildReview([resultAttempt]) : null, [resultAttempt])
+  const resultReviewCount = resultReview?.exam.questions.length ?? 0
   const history = useMemo(() => questionHistory(resultAttempt
     ? [resultAttempt, ...library.filter(item => item.id !== resultAttempt.id)]
     : library), [library, resultAttempt])
@@ -150,10 +212,10 @@ export default function App() {
   }, studyInstructions(purpose, purpose === 'mistakes' ? mistakeSource(pickedMistakes) : source,
     relatedness, nextSessionClues, promptSpec.includeStudyGuide)) : ''
 
-  const openMistakePractice = (topic = '') => {
+  const openMistakePractice = (topic = '', selected: string[] = []) => {
     setPurpose('mistakes')
     setMistakeTopic(topic)
-    setSelectedMistakes([])
+    setSelectedMistakes(selected)
     setPromptCopied(false)
     setPromptOpen(true)
   }
@@ -185,7 +247,7 @@ export default function App() {
       if (!mounted) return
       setLibrary(attempts)
       const latest = attempts.find(item => !item.completed)
-      if (latest) { setRun(latest); setExam(latest.exam); setMode(latest.mode) }
+      if (latest) { setRun(latest); setMode(latest.mode) }
       setReady(true)
     }
     load().catch(() => { if (mounted) setStorageError('Could not open the exam library. Check browser storage permissions and reload.') })
@@ -205,16 +267,30 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [run?.paused, screen])
 
-  const startWith = (selectedExam: Exam, selectedMode: Exam['mode']) => {
-    const active: RunData = { id: crypto.randomUUID(), updated: Date.now(), exam: selectedExam, mode: selectedMode, index: 0, answers: {}, responses: {}, selfGrades: {}, committed: [], hints: {}, work: {}, revealedChoices: [], explanations: {}, seconds: 0, paused: false, studyGuideOpen: !!(selectedExam.studyGuide || selectedExam.readingReferences?.length) }
-    setRun(active); setExam(selectedExam); setMode(selectedMode); setScreen('run'); setError(''); setConfirmFinish(false); setFocus(false)
+  const startWith = (selectedExam: Exam, selectedMode: Exam['mode'], review?: ReviewHistory) => {
+    const active: RunData = { id: crypto.randomUUID(), updated: Date.now(), exam: selectedExam, mode: selectedMode, index: 0, answers: {}, responses: {}, selfGrades: {}, committed: [], hints: {}, work: {}, revealedChoices: [], explanations: {}, seconds: 0, paused: false, studyGuideOpen: !!(selectedExam.studyGuide || selectedExam.readingReferences?.length), review }
+    setRun(active); setMode(selectedMode); setScreen('run'); setError(''); setConfirmFinish(false); setFocus(false)
+    window.scrollTo(0, 0)
   }
-  const start = (resume = false) => {
-    if (!resume || !run) { startWith(exam, mode); return }
-    const active = run
-    setRun(active); setExam(active.exam); setMode(active.mode); setScreen('run'); setError(''); setConfirmFinish(false)
+  const resumeAttempt = (attempt: RunData) => {
+    setRun(attempt); setMode(attempt.mode); setScreen('run'); setError(''); setConfirmFinish(false); setFocus(false)
+    window.scrollTo(0, 0)
   }
   const updateRun = (fn: (current: RunData) => RunData) => setRun(r => r ? fn(r) : r)
+  const goToQuestion = (index: number) => {
+    questionMapRef.current?.close()
+    updateRun(r => ({ ...r, index }))
+    window.requestAnimationFrame(() => questionStageRef.current?.focus())
+  }
+  const goHome = () => {
+    setScreen('welcome'); setFocus(false)
+    window.scrollTo(0, 0)
+  }
+  const closeFinish = () => {
+    finishDialogRef.current?.close()
+    setConfirmFinish(false)
+  }
+  const openImport = () => { setJsonText(''); setError(''); setJsonOpen(true) }
   const importJson = (raw: string) => {
     try { const parsed = parseExam(raw); setJsonText(JSON.stringify(parsed, null, 2)); setJsonOpen(false); startWith(parsed, parsed.mode) }
     catch (e) { setError(e instanceof Error ? e.message : 'Could not read this exam JSON.') }
@@ -231,6 +307,7 @@ export default function App() {
     if (questionType(q) !== 'multiple-choice' && !(run.responses[q.id] ?? '').trim()) return
     const committed = [...run.committed, q.id]
     setRun({ ...run, answers: skipped ? { ...run.answers, [q.id]: '' } : run.answers, committed })
+    window.requestAnimationFrame(() => answerReviewRef.current?.focus())
   }
   const finish = () => {
     if (!run) return
@@ -241,37 +318,69 @@ export default function App() {
       }
     }
     const done = { ...run, completed: true, committed: [...committed], paused: true }
-    setRun(done); setScreen('results'); setConfirmFinish(false)
+    closeFinish()
+    setRun(done); setScreen('results')
+    window.scrollTo(0, 0)
   }
-  const reset = () => { setRun(null); setScreen('welcome'); setFocus(false) }
   const current = run?.exam.questions[run.index]
   const explanationPrompt = current ? `You are a patient tutor. Help the learner understand this exact question without changing its meaning.\n\nEXAM: ${run?.exam.title ?? ''}\nSUBJECT: ${run?.exam.subject ?? ''}\nQUESTION DATA (authoritative JSON):\n${JSON.stringify(current, null, 2)}\n\nLEARNER REQUEST: ${explainRequest.trim() || 'Explain the question clearly and identify what it is asking.'}\n\nAvailable output tools: Markdown text, inline/display LaTeX, and a declarative 2D SVG drawing. Use a drawing only when it materially helps (geometry, graphs, diagrams); do not emit executable code, scripts, external URLs, or 3D. Return exactly one JSON object, no fences or extra prose, in this protocol:\n{\n  "protocol": "stillroom.explanation.v1",\n  "questionId": ${JSON.stringify(current.id)},\n  "title": "Brief heading",\n  "blocks": [\n    { "type": "markdown", "content": "Explanation using Markdown and delimited LaTeX" },\n    { "type": "svg", "title": "Diagram title", "viewBox": "0 0 400 240", "elements": [{ "shape": "line", "x1": 20, "y1": 120, "x2": 380, "y2": 120, "stroke": "#536b55", "strokeWidth": 2 }, { "shape": "circle", "cx": 200, "cy": 120, "r": 8, "fill": "#536b55" }, { "shape": "text", "x": 208, "y": 110, "text": "A", "fill": "#303a32" }] }\n  ]\n}\nUse only markdown blocks and SVG elements line, circle, rect, path, text, polygon. SVG coordinates must fit viewBox; use simple paths and short labels. Omit SVG when unnecessary. Do not reveal the answer unless the learner explicitly asks; focus on interpreting terms, givens, goals, and a first step. Do not include HTML or arbitrary SVG attributes.` : ''
   const copyExplanationPrompt = async () => { try { await navigator.clipboard.writeText(explanationPrompt) } catch { /* The prompt remains selectable in its preview. */ } setExplainCopied(true); window.setTimeout(() => setExplainCopied(false), 2200) }
-  const visibleExam = run?.exam ?? exam
-  const formatNames: Record<QuestionType, string> = { 'multiple-choice': 'multiple choice', 'short-answer': 'short answer', 'free-response': 'written response', proof: 'proof' }
-  const formatCounts = visibleExam.questions.reduce<Partial<Record<QuestionType, number>>>((counts, q) => {
-    const type = questionType(q)
-    counts[type] = (counts[type] ?? 0) + 1
-    return counts
-  }, {})
-  const formatSummary = (Object.entries(formatCounts) as [QuestionType, number][]).map(([type, count]) => `${count} ${formatNames[type]}`).join(' · ')
-  const answered = run?.committed.length ?? 0
+  const answered = run ? answeredCount(run) : 0
+  const resultSummary = [
+    [resultHistory.filter(entry => entry.outcome === 'needs review').length, 'missed'],
+    [resultHistory.filter(entry => entry.outcome === 'correct' && entry.hintsUsed > 0).length, 'solved with hints'],
+    [resultHistory.filter(entry => entry.skipped).length, 'skipped'],
+    [resultHistory.filter(entry => entry.outcome === 'ungraded').length, 'awaiting self-check'],
+    [resultHistory.filter(entry => entry.outcome === 'unanswered' && !entry.skipped).length, 'unanswered'],
+  ] as const
   const selected = current && run ? run.answers[current.id] : undefined
   const committed = !!current && !!run?.committed.includes(current.id)
+  const previousReview = committed && current ? run?.review?.[current.id] : undefined
   const isMultipleChoice = !!current && questionType(current) === 'multiple-choice'
   const correct = !!current && (isMultipleChoice ? selected === current.answer : run?.selfGrades[current.id] === 'met')
-  const choicesHidden = !!current && isMultipleChoice && !!run?.exam.hideOptionsUntilWork && !run.revealedChoices.includes(current.id)
+  const choicesHidden = !!current && isMultipleChoice && !committed && !!run?.exam.hideOptionsUntilWork && !run.revealedChoices.includes(current.id)
   const correctChoice = current?.choices.find(choice => choice.id === current.answer)
   const earned = current && run && committed && correct ? Math.max(0, (current.points ?? run.exam.pointsPerQuestion ?? 100) - current.hints.slice(0, run.hints[current.id] ?? 0).reduce((s, h) => s + h.cost, 0)) : 0
   const choicesView = current && run && <div className="choices-list" role="group" aria-label="Answer choices">{current.choices.map((choice, i) => { const chosen = selected === choice.id; const reveal = committed || (run.mode === 'feedback' && chosen); const isAnswer = choice.id === current.answer; return <button key={choice.id} className={`choice ${chosen ? 'chosen' : ''} ${reveal && isAnswer ? 'correct' : ''} ${reveal && chosen && !isAnswer ? 'incorrect' : ''} ${committed ? 'locked' : ''}`} onClick={() => { if (committed) return; updateRun(r => ({ ...r, answers: { ...r.answers, [current.id]: r.answers[current.id] === choice.id && r.mode === 'washback' ? '' : choice.id } })) }} disabled={committed}><span className="choice-letter">{String.fromCharCode(65 + i)}</span><Content className="choice-text" text={choice.text} /><span className="choice-result">{reveal && isAnswer ? <Check size={16} /> : reveal && chosen ? <X size={15} /> : chosen ? <span className="radio-dot" /> : null}</span></button> })}</div>
   const choiceReview = current?.choiceExplanations && current.choices.filter(choice => choice.id !== current.answer && current.choiceExplanations?.[choice.id]).map(choice => <div className="choice-review-row" key={choice.id}><div className="choice-review-label"><span>Wrong option {String.fromCharCode(65 + current.choices.indexOf(choice))}</span><Content className="wrong-choice-value" text={choice.text} /></div><Content className="choice-review-text" text={current.choiceExplanations?.[choice.id] ?? ''} /></div>)
+  const questionMap = run && <div className="question-map">{run.exam.questions.map((question, index) => {
+    const active = index === run.index
+    const done = run.committed.includes(question.id) || (run.mode === 'feedback' && !!run.answers[question.id])
+    const skipped = done && questionType(question) === 'multiple-choice' && !run.answers[question.id]
+    const isCorrect = questionType(question) === 'multiple-choice' ? run.answers[question.id] === question.answer : run.selfGrades[question.id] === 'met'
+    return <button key={question.id} className={`map-item ${active ? 'current' : ''} ${done ? 'done' : ''} ${done && isCorrect ? 'map-correct' : ''}`}
+      onClick={() => goToQuestion(index)} disabled={run.mode === 'washback' && !done && index > run.index}
+      aria-current={active ? 'step' : undefined} aria-label={`Question ${index + 1}${question.topic ? `, ${question.topic}` : ''}${skipped ? ', skipped' : done ? ', answered' : ''}`}>
+      <span className="map-num">{done && isCorrect ? <Check size={12} /> : String(index + 1)}</span>
+      <span className="map-topic">{question.topic || `Question ${index + 1}`}</span>
+      <span className="map-state">{active ? 'Current' : skipped ? 'Skipped' : done ? 'Done' : ''}</span>
+    </button>
+  })}</div>
+  const hintsUsed = current && run ? run.hints[current.id] ?? 0 : 0
+  const nextHint = current?.hints[hintsUsed]
+  const allCommitted = !!run && run.committed.length === run.exam.questions.length
+  const lastQuestion = !!run && run.index === run.exam.questions.length - 1
+  const advance = () => {
+    if (!run) return
+    if (run.mode === 'washback' && allCommitted) finish()
+    else if (lastQuestion) setConfirmFinish(true)
+    else goToQuestion(run.index + 1)
+  }
+  const mainAction = current && run && (() => {
+    if (choicesHidden) return { label: 'Reveal choices', disabled: !(run.work[current.id] ?? '').trim(), onClick: () => {
+      updateRun(r => ({ ...r, revealedChoices: [...r.revealedChoices, current.id] }))
+      window.requestAnimationFrame(() => questionStageRef.current?.querySelector<HTMLButtonElement>('.choice')?.focus())
+    } }
+    if (!committed && !isMultipleChoice) return { label: 'Submit for review', disabled: !(run.responses[current.id] ?? '').trim(), onClick: () => submit(current) }
+    if (!committed && run.mode === 'washback') return { label: 'Lock in answer', disabled: !selected, onClick: () => submit(current) }
+    return { label: lastQuestion || (allCommitted && run.mode === 'washback') ? 'Finish session' : 'Next question', onClick: advance }
+  })()
 
-  return <div className={`app-shell ${focus && screen === 'run' ? 'focus-mode' : ''}`}>
+  return <div className={`app-shell ${screen === 'run' && !run?.studyGuideOpen ? 'session-open' : ''} ${focus && screen === 'run' ? 'focus-mode' : ''}`}>
     <header className="topbar">
-      <button className="brand" onClick={() => screen === 'run' ? setConfirmFinish(true) : setScreen('welcome')} aria-label="Stillroom home"><span className="brand-icon"><span /></span><span className="brand-name">stillroom<span className="brand-period">.</span></span></button>
-      <div className="topbar-center"><span className="quiet-mark" />A QUIET PLACE TO THINK</div>
+      <button className="brand" onClick={goHome} aria-label="Stillroom home"><span className="brand-icon"><span /></span><span className="brand-name">stillroom<span className="brand-period">.</span></span></button>
       <div className="topbar-right">
-        {screen === 'run' && <span className="saved-state"><span />Autosaved</span>}
+        {screen === 'run' && !storageError && <span className="saved-state"><span />Autosaved</span>}
         <div className="font-controls" role="group" aria-label="Reading size">
           <button className="icon-button" title="Decrease font size" aria-label="Decrease font size" disabled={fontScale <= 0.9} onClick={() => setFontScale(size => Math.max(0.9, Math.round((size - 0.1) * 10) / 10))}><Minus size={14} /></button>
           <button className="icon-button" title="Increase font size" aria-label="Increase font size" disabled={fontScale >= 1.2} onClick={() => setFontScale(size => Math.min(1.2, Math.round((size + 0.1) * 10) / 10))}><Plus size={14} /></button>
@@ -288,10 +397,13 @@ export default function App() {
     {storageError && <p role="alert" className="storage-alert">{storageError}</p>}
     {screen === 'statistics' && <TopicStatistics topics={topics} ready={ready} onBack={() => setScreen('library')} onPractice={openMistakePractice} />}
     {screen === 'library' && <main className="exam-library">
-      <button className="back-link" onClick={() => setScreen('welcome')}><ArrowLeft size={15} /> Home</button>
+      <button className="back-link" onClick={goHome}><ArrowLeft size={15} /> Home</button>
       <h1>Your exams</h1>
+      <div className="library-tools">
+      <button className="primary-button" disabled={!ready} onClick={openImport}>Import JSON</button>
       <button className="secondary-button" onClick={() => setScreen('statistics')}>Topic statistics</button>
-      <button className="secondary-button" disabled={!ready} onClick={() => { setJsonText(''); setError(''); setJsonOpen(true) }}>Import exam</button>
+      <details className="library-backup"><summary>Backup</summary>
+      <div className="library-backup-actions">
       <button className="secondary-button" disabled={!library.length} onClick={() => {
         const url = URL.createObjectURL(new Blob([JSON.stringify({ format: 'stillroom-library-v1', attempts: library })], { type: 'application/json' }))
         const link = document.createElement('a')
@@ -324,9 +436,16 @@ export default function App() {
           setStorageError('')
         } catch { setStorageError('Could not restore this backup. Choose a Stillroom library backup and check available storage.') }
       }} /></label>
-      {!library.length && <p>{ready ? 'Your exams will appear here when you start practicing.' : 'Loading exams?'}</p>}
-      {library.map(item => <article key={item.id}>
-        <h2>{item.exam.title}</h2><p>{item.completed ? 'Completed' : 'In progress'} ? {item.exam.questions.length} questions ? {new Date(item.updated).toLocaleString()}</p>
+      </div></details></div>
+      {library.length > 0 && <div className="choice-switch library-filters" role="group" aria-label="Filter exams">
+        <button aria-pressed={examFilter === 'all'} onClick={() => setExamFilter('all')}>All</button>
+        <button aria-pressed={examFilter === 'in-progress'} onClick={() => setExamFilter('in-progress')}>In progress</button>
+        <button aria-pressed={examFilter === 'completed'} onClick={() => setExamFilter('completed')}>Completed</button>
+      </div>}
+      {visibleAttempts.length === 0 && <p role="status">{!ready ? 'Loading exams…' : examFilter === 'in-progress' ? 'No exams in progress.' : examFilter === 'completed' ? 'No completed exams yet.' : 'Your exams will appear here when you start practicing.'}</p>}
+      {visibleAttempts.map(item => <article key={item.id}>
+        <h2>{item.exam.title}</h2>
+        <p className="attempt-meta">{item.completed ? 'Completed' : 'In progress'} · {answeredCount(item)} of {item.exam.questions.length} answered · {new Date(item.updated).toLocaleDateString()}</p>
         {item.completed && <details><summary>Review answers</summary>{item.exam.questions.map(q => <section key={q.id}>
           <Content text={q.prompt} /><h3>Your answer</h3><Content text={item.responses[q.id] || q.choices.find(c => c.id === item.answers[q.id])?.text || 'Unanswered'} />
           <h3>Model answer</h3><Content text={q.expectedAnswer || q.choices.find(c => c.id === q.answer)?.text || ''} />
@@ -334,38 +453,139 @@ export default function App() {
           {item.explanations[q.id] && <ExplanationDocument raw={item.explanations[q.id]} questionId={q.id} />}
         </section>)}</details>}
         <button className="secondary-button" onClick={() => {
-          if (item.completed) startWith(item.exam, item.mode)
-          else { setRun(item); setExam(item.exam); setMode(item.mode); setScreen('run') }
+          if (item.completed) startWith(item.exam, item.mode, item.review)
+          else resumeAttempt(item)
         }}>{item.completed ? 'Practice again' : 'Resume attempt'}</button>
       </article>)}
     </main>}
-    {screen === 'welcome' && ready && <main className="welcome-page">
-      <div className="welcome-copy"><div className="eyebrow"><Sparkles size={13} /> YOUR PRIVATE STUDY SPACE</div><h1>Think slowly.<br /><em>See clearly.</em></h1><p className="welcome-intro">A distraction-free place to test what you know, follow the hard parts, and learn from every attempt.</p><div className="welcome-meta"><span><span className="meta-dot" /> Built for deep work</span><span className="meta-divider" /><span>Bring any subject</span></div></div>
-      <section className="exam-launch-card"><div className="launch-card-top"><div className="launch-symbol"><Layers2 size={19} strokeWidth={1.7} /></div><span className="launch-count">SESSION 01 <i>—</i> {exam.questions.length} QUESTIONS</span></div><div className="launch-subject">{exam.subject || 'Your next study session'}</div><h2>{exam.title}</h2><p>{exam.subtitle || 'A focused set of questions to work through at your own pace.'}</p><div className="launch-format-summary"><span>QUESTION FORMATS</span><b>{formatSummary}</b></div><div className="launch-rule" /><div className="mode-label">CHOOSE YOUR PACE</div><div className="mode-switch" role="group" aria-label="Exam mode">
-        <button className={mode === 'washback' ? 'active' : ''} onClick={() => setMode('washback')}><span className="mode-glyph">?</span><span><b>Washback</b><small>One at a time, hints cost points</small></span></button><button className={mode === 'feedback' ? 'active' : ''} onClick={() => setMode('feedback')}><span className="mode-glyph">?</span><span><b>Feedback</b><small>Explore answers as you go</small></span></button>
-      </div><div className="launch-actions">{run && !run.completed ? <><button className="primary-button" onClick={() => start(true)}>Continue session <ArrowRight size={16} /></button><button className="secondary-button" onClick={() => { start() }}><RotateCcw size={14} /> Start fresh</button></> : <><button className="primary-button" onClick={() => setPromptOpen(true)}><Sparkles size={15} /> Build an exam prompt</button><button className="secondary-button" onClick={() => start()}>Try the sample exam <ArrowRight size={14} /></button><button className="launch-import-link import-direct" onClick={() => { setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={12} /> I already have exam JSON</button></>}</div>{run && <div className="saved-exam-actions"><button className="launch-import-link" onClick={() => setPromptOpen(true)}><Sparkles size={12} /> Build a prompt for a new exam</button><button className="launch-import-link" onClick={() => { setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={12} /> Bring a different exam</button></div>}<div className="launch-foot"><LockKeyhole size={12} /> Your progress stays on this device</div></section>
-      <div className="welcome-footer"><span>MADE FOR THE MOMENT BEFORE IT CLICKS</span><span className="footer-orbit">?</span></div>
+    {screen === 'welcome' && ready && <main className="study-home">
+      <h1>Study</h1>
+      <div className="home-sessions">
+        {pendingExam && <section className="home-session">
+          <div><h2>{pendingExam.exam.title}</h2><p>{answeredCount(pendingExam)} of {pendingExam.exam.questions.length} answered</p></div>
+          <button className="primary-button" onClick={() => resumeAttempt(pendingExam)}>Continue session <ArrowRight size={16} /></button>
+        </section>}
+        <section className="home-session">
+          <div><h2>Question review</h2><p>{pendingReview
+            ? `${answeredCount(pendingReview)} of ${pendingReview.exam.questions.length} answered`
+            : reviewCount ? 'Retry questions from past sessions.' : 'Questions you miss, skip, or use hints on will appear here.'}</p></div>
+          <button className={pendingExam || (!pendingReview && !reviewCount) ? 'secondary-button' : 'primary-button'} disabled={!pendingReview && !reviewCount} onClick={() => {
+            if (pendingReview) resumeAttempt(pendingReview)
+            else if (review && reviewCount) startWith(review.exam, review.exam.mode, review.previous)
+          }}>{pendingReview ? 'Continue review' : reviewLabel(reviewCount || reviewLimit)} <ArrowRight size={16} /></button>
+        </section>
+      </div>
+      <section className="home-new-exam">
+        <h2>New exam</h2>
+        <div className="home-new-actions">
+          <button className={pendingExam || pendingReview || reviewCount ? 'secondary-button' : 'primary-button'} onClick={() => setPromptOpen(true)}>Build an exam prompt</button>
+          <button className="secondary-button" onClick={openImport}>Import JSON</button>
+          <button className="back-link sample-link" onClick={() => startWith(demoExam, mode)}>Try the sample exam</button>
+        </div>
+        <details className="home-options">
+          <summary>Session options</summary>
+          <div className="choice-switch" role="group" aria-label="Exam mode">
+            <button aria-pressed={mode === 'washback'} onClick={() => setMode('washback')}>Washback</button>
+            <button aria-pressed={mode === 'feedback'} onClick={() => setMode('feedback')}>Feedback</button>
+          </div>
+          <p>{mode === 'washback' ? 'Submit each answer to see its explanation. Hints cost points.' : 'Check answers as you go and move between questions freely.'}</p>
+          {pendingExam && <div className="home-new-actions"><button className="secondary-button" onClick={() => startWith(pendingExam.exam, mode)}>Start a fresh attempt</button></div>}
+        </details>
+      </section>
     </main>}
 
-    {screen === 'run' && run && current && <main className="run-page"><div className="run-heading"><button className="back-link" onClick={() => { setScreen('welcome'); setFocus(false) }}><ArrowLeft size={15} /> Leave session</button><div className="run-title-wrap"><span className="run-subject">{run.exam.subject || 'Independent study'} <span>—</span> {run.mode === 'washback' ? 'Washback' : 'Feedback'}</span><h1>{run.exam.title}</h1></div><div className="run-heading-right"><div className="score-chip"><span>POINTS</span><b>{score(run)}<i> / {maxScore}</i></b></div><button className="focus-button new-prompt-button" onClick={() => setPromptOpen(true)} title="Build a prompt for a different exam"><Sparkles size={14} /> New exam</button><button className={`focus-button ${focus ? 'selected' : ''}`} onClick={() => setFocus(f => !f)}><Focus size={15} /> {focus ? 'Exit focus' : 'Focus mode'}</button></div></div>
-      {run.studyGuideOpen && <section className="study-guide-panel"><div className="eyebrow">BEFORE YOU BEGIN</div><h2>Study notes</h2>{run.exam.studyGuide && <Content className="study-guide-content" text={run.exam.studyGuide} />}{run.exam.readingReferences?.length ? <div><h3>Suggested reading</h3><ul>{run.exam.readingReferences.map((item, i) => <li key={i}><Content text={item} /></li>)}</ul></div> : null}<button className="primary-button" onClick={() => updateRun(r => ({...r, studyGuideOpen:false}))}>Go to questions <ArrowRight size={15}/></button></section>}<div className="run-guide-toggle" style={{display:run.exam.studyGuide || run.exam.readingReferences?.length ? undefined : "none"}}><button className="secondary-button" onClick={() => updateRun(r => ({...r, studyGuideOpen:true}))}>Study notes and reading</button></div><div className="run-layout" style={{display:run.studyGuideOpen?"none":undefined}}><aside className="study-rail"><div className="rail-section rail-progress"><div className="rail-label">YOUR PROGRESS <span>{answered.toString().padStart(2, '0')} / {run.exam.questions.length.toString().padStart(2, '0')}</span></div><div className="progress-track"><i style={{ width: `${answered / run.exam.questions.length * 100}%` }} /></div><div className="question-map">{run.exam.questions.map((q, i) => { const done = run.committed.includes(q.id); const active = i === run.index; const qCorrect = questionType(q) === 'multiple-choice' ? run.answers[q.id] === q.answer : run.selfGrades[q.id] === 'met'; return <button key={q.id} className={`map-item ${active ? 'current' : ''} ${done ? 'done' : ''} ${done && qCorrect ? 'map-correct' : ''}`} onClick={() => { if (run.mode === 'feedback' || done || i <= run.index) updateRun(r => ({ ...r, index: i })) }} disabled={run.mode === 'washback' && !done && i > run.index} aria-label={`Question ${i + 1}${done ? ', answered' : ''}`}><span className="map-num">{done && qCorrect ? <Check size={12} /> : String(i + 1).padStart(2, '0')}</span><span className="map-topic">{q.topic || `Question ${i + 1}`}</span><span className="map-state">{active ? 'NOW' : done ? 'DONE' : '—'}</span></button> })}</div></div>
-        <div className="rail-section rail-tools"><div className="rail-label">SESSION</div><div className="clock"><Clock3 size={14} /><span>{fmtTime(run.seconds)}</span><button title={run.paused ? 'Resume timer' : 'Pause timer'} onClick={() => updateRun(r => ({ ...r, paused: !r.paused }))}>{run.paused ? <Play size={13} /> : <Pause size={13} />}</button></div><p className="timer-note">Time is for reflection, not pressure.</p></div>
-        <div className="rail-bottom"><div className="mode-note"><span className="note-icon"><Lightbulb size={14} /></span><p><b>{run.mode === 'washback' ? 'A deliberate pace' : 'Learn as you go'}</b><br />{run.mode === 'washback' ? 'Commit each answer to reveal its explanation.' : 'Move freely and check each answer when ready.'}</p></div><button className="finish-link" onClick={() => setConfirmFinish(true)}>Finish session <ArrowRight size={14} /></button></div></aside>
-        <section className="question-stage" key={current.id}><div className="question-topline"><div className="question-number">QUESTION <b>{String(run.index + 1).padStart(2, '0')}</b><span> / {String(run.exam.questions.length).padStart(2, '0')}</span></div><div className="question-tags"><span className="topic-tag">{{'multiple-choice':'Multiple choice','short-answer':'Short answer','free-response':'Written response','proof':'Proof'}[questionType(current)]}</span>{current.topic && <span className="topic-tag">{current.topic}</span>}{current.difficulty && <span className={`difficulty ${current.difficulty}`}>{current.difficulty}</span>}</div></div>
-          <div className="question-body"><div className="question-overline">TAKE A MOMENT WITH THIS ONE</div><Content className="question-prompt" text={current.prompt} />
+    {screen === 'run' && run && current && <main className="run-page"><div className="run-heading"><button className="back-link" onClick={goHome}><ArrowLeft size={15} /> Leave session</button><div className="run-title-wrap"><span className="run-subject">{run.exam.subject || 'Independent study'} <span>—</span> {run.mode === 'washback' ? 'Washback' : 'Feedback'}</span><h1>{run.exam.title}</h1></div><div className="run-heading-right"><div className="score-chip"><span>POINTS</span><b>{score(run)}<i> / {maxScore}</i></b></div><button className={`focus-button ${focus ? 'selected' : ''}`} onClick={() => setFocus(f => !f)}><Focus size={15} /> {focus ? 'Exit focus' : 'Focus mode'}</button></div></div>
+      {run.studyGuideOpen && <section className="study-guide-panel"><h2>Study notes</h2>{run.exam.studyGuide && <Content className="study-guide-content" text={run.exam.studyGuide} />}{run.exam.readingReferences?.length ? <div><h3>Suggested reading</h3><ul>{run.exam.readingReferences.map((item, i) => <li key={i}><Content text={item} /></li>)}</ul></div> : null}<button className="primary-button" onClick={() => updateRun(r => ({...r, studyGuideOpen:false}))}>Go to questions <ArrowRight size={15}/></button></section>}<div className="run-guide-toggle" style={{display:run.exam.studyGuide || run.exam.readingReferences?.length ? undefined : "none"}}><button className="secondary-button" onClick={() => updateRun(r => ({...r, studyGuideOpen:true}))}>Study notes and reading</button></div><div className="run-layout" style={{display:run.studyGuideOpen?"none":undefined}}><aside className="study-rail"><div className="rail-section rail-progress"><div className="rail-label">Answered <span>{answered} / {run.exam.questions.length}</span></div><div className="progress-track"><i style={{ width: `${answered / run.exam.questions.length * 100}%` }} /></div>{questionMap}</div>
+        <div className="rail-section rail-tools"><div className="rail-label">SESSION</div><div className="clock"><Clock3 size={14} /><span>{fmtTime(run.seconds)}</span><button title={run.paused ? 'Resume timer' : 'Pause timer'} onClick={() => updateRun(r => ({ ...r, paused: !r.paused }))}>{run.paused ? <Play size={13} /> : <Pause size={13} />}</button></div></div>
+        <div className="rail-bottom"><button className="finish-link" onClick={() => setConfirmFinish(true)}>Finish session <ArrowRight size={14} /></button></div></aside>
+        <section className="question-stage" key={current.id} ref={questionStageRef} tabIndex={-1} aria-label={`Question ${run.index + 1}`}>
+          <div className="question-topline"><div className="question-number">Question <b>{run.index + 1}</b><span> / {run.exam.questions.length}</span></div><div className="question-tags"><span className="topic-tag">{{'multiple-choice':'Multiple choice','short-answer':'Short answer','free-response':'Written response','proof':'Proof'}[questionType(current)]}</span>{current.topic && <span className="topic-tag">{current.topic}</span>}{current.difficulty && <span className={`difficulty ${current.difficulty}`}>{current.difficulty}</span>}</div></div>
+          <div className="question-body"><Content className="question-prompt" text={current.prompt} />
           <div className="explain-more"><button className="secondary-button" onClick={() => { setExplainRequest(''); setExplainOpen(true) }}><CircleHelp size={14} /> {run.explanations?.[current.id] ? 'Ask for another explanation' : 'Explain more'}</button>{run.explanations?.[current.id] && <section className={`saved-explanation ${explanationExpanded ? 'expanded' : ''}`}><button className="saved-explanation-toggle" aria-expanded={explanationExpanded} onClick={() => setExplanationExpanded(value => !value)}><span><b>Question explanation</b><small>{explanationExpanded ? 'Hide explanation' : 'Show saved explanation'}</small></span><ChevronDown size={18} aria-hidden="true" /></button><div className="saved-explanation-content" hidden={!explanationExpanded}><ExplanationDocument raw={run.explanations[current.id]} questionId={current.id} /></div></section>}</div>
-          {isMultipleChoice ? choicesHidden ? <section className="solve-first-panel" aria-label="Solve before seeing choices"><div className="solve-first-heading"><span className="note-icon"><Layers2 size={15} /></span><span><b>Work it out first</b><small>Your answer choices are hidden until you record a result.</small></span></div><label htmlFor={`work-${current.id}`}>Your result, proof, or working</label><textarea id={`work-${current.id}`} value={run.work[current.id] ?? ''} onChange={e => updateRun(r => ({ ...r, work: { ...r.work, [current.id]: e.target.value } }))} placeholder="Write your result here. You can use LaTeX, for example $\lambda=0$." /><button className="action-button primary" onClick={() => updateRun(r => ({ ...r, revealedChoices: [...r.revealedChoices, current.id] }))} disabled={!(run.work[current.id] ?? '').trim()}>Reveal choices to compare <ArrowRight size={15} /></button></section> : <>{run.exam.hideOptionsUntilWork && run.work[current.id] && <div className="work-note"><span>Your work</span><Content className="work-note-content" text={run.work[current.id]} /></div>}{choicesView}</> : <section className={`written-response written-${questionType(current)}`}><label htmlFor={`response-${current.id}`}>Your {questionType(current) === 'proof' ? 'proof' : questionType(current) === 'short-answer' ? 'short answer' : 'written response'}</label>{!committed && <small className="response-guidance">{questionType(current) === 'proof' ? 'State the argument in clear steps and justify each implication.' : questionType(current) === 'short-answer' ? 'Keep it concise; include the key result or reasoning.' : 'Show your full reasoning, derivation, and conclusion.'}</small>}{committed ? <div className="work-note"><Content className="work-note-content" text={run.responses[current.id] ?? ''} /></div> : <textarea id={`response-${current.id}`} value={run.responses[current.id] ?? ''} onChange={e => updateRun(r => ({ ...r, responses: { ...r.responses, [current.id]: e.target.value } }))} placeholder={questionType(current) === 'short-answer' ? 'Write a concise answer…' : questionType(current) === 'proof' ? 'Write your proof here. Mathematical notation can use LaTeX, for example $T(v)=\lambda v$.' : 'Write your full response here. Mathematical notation can use LaTeX.'} />}</section>}
-          {run.mode === 'washback' && !committed && current.hints.length > 0 && <div className="hint-area"><div className="hint-heading"><span><Lightbulb size={15} /> Need a foothold?</span><span>Each hint lowers this question—s points</span></div><div className="hint-list">{current.hints.map((hint, i) => { const open = (run.hints[current.id] ?? 0) > i; return <div className={`hint-card ${open ? 'revealed' : ''}`} key={`${current.id}-${i}`}><button onClick={() => { if (!open) updateRun(r => ({ ...r, hints: { ...r.hints, [current.id]: i + 1 } })) }} disabled={open}><span className="hint-lock">{open ? <Check size={13} /> : String(i + 1).padStart(2, '0')}</span><span className="hint-name">{hint.label}</span>{open ? <span className="hint-cost">-{hint.cost} pts</span> : <span className="hint-cost">-{hint.cost} pts <ChevronDown size={12} /></span>}</button>{open && <Content className="hint-rich" text={hint.text} />}</div> })}</div></div>}
-          {committed && <div className={`answer-review ${correct ? 'review-correct' : 'review-wrong'}`}><div className="review-heading">{correct ? <><CheckCheck size={16} /> {isMultipleChoice ? `Correct — ${earned} points` : `Self-checked — ${earned} points`}</> : <><X size={15} /> {isMultipleChoice ? 'Not quite — take the idea with you' : 'Compare your work with the model answer'}</>}</div><div className="review-answer"><span>{isMultipleChoice ? 'Correct answer' : 'Model answer'}</span><Content className="correct-answer-value" text={isMultipleChoice ? (correctChoice?.text ?? '') : (current.expectedAnswer ?? '')} /></div>{!isMultipleChoice && current.rubric && <div className="rubric-review"><b>Grading rubric</b><Content className="explanation-rich" text={current.rubric} /><div className="self-grade"><span>How did your work compare?</span><button className={run.selfGrades[current.id] === 'met' ? 'selected' : ''} onClick={() => updateRun(r => ({ ...r, selfGrades: { ...r.selfGrades, [current.id]: 'met' } }))}>I met the rubric</button><button className={run.selfGrades[current.id] === 'review' ? 'selected' : ''} onClick={() => updateRun(r => ({ ...r, selfGrades: { ...r.selfGrades, [current.id]: 'review' } }))}>Needs more work</button></div></div>}{current.explanation && <Content className="explanation-rich" text={current.explanation} />}{choiceReview && <div className="choice-review"><h3>Why the other choices are wrong</h3>{choiceReview}</div>}</div>}
-          {run.mode === 'feedback' && isMultipleChoice && selected && !committed && <div className={`answer-review ${correct ? 'review-correct' : 'review-wrong'}`}><div className="review-heading">{correct ? <><CheckCheck size={16} /> That—s right</> : <><X size={15} /> Take another look</>}</div><div className="review-answer"><span>Correct answer</span><Content className="correct-answer-value" text={correctChoice?.text ?? ''} /></div>{current.explanation && <Content className="explanation-rich" text={current.explanation} />}{choiceReview && <div className="choice-review"><h3>Why the other choices are wrong</h3>{choiceReview}</div>}</div>}
-          </div><div className="question-footer"><div className="footer-note"><span className="keycap">{run.mode === 'washback' ? '01' : '?'}</span>{run.mode === 'washback' ? 'One considered answer. Then the reasoning.' : 'Change your answer until you move on.'}</div><div className="question-actions">{!isMultipleChoice && !committed && <button className="action-button primary" onClick={() => submit(current)} disabled={!(run.responses[current.id] ?? '').trim()}>Submit for review <ArrowRight size={15} /></button>}{run.mode === 'feedback' && (isMultipleChoice || committed) && <button className="action-button secondary" onClick={() => { if (run.index < run.exam.questions.length - 1) updateRun(r => ({ ...r, index: r.index + 1 })); else setConfirmFinish(true) }}>{run.index === run.exam.questions.length - 1 ? 'Finish review' : 'Next question'} <ArrowRight size={15} /></button>}{run.mode === 'washback' && !committed && isMultipleChoice && <><button className="action-button text-action" onClick={() => submit(current, true)}>I don—t know</button><button className="action-button primary" onClick={() => submit(current)} disabled={!selected}>Lock in answer <ArrowRight size={15} /></button></>}{run.mode === 'washback' && committed && <button className="action-button primary" onClick={() => { if (run.committed.length === run.exam.questions.length) { finish() } else updateRun(r => ({ ...r, index: Math.min(r.index + 1, r.exam.questions.length - 1) })) }}>{run.committed.length === run.exam.questions.length ? 'See your reflection' : 'Continue'} <ArrowRight size={15} /></button>}</div></div>
-        </section></div></main>}
+          {isMultipleChoice ? choicesHidden ? <section className="written-response">
+            <label htmlFor={`work-${current.id}`}>Your work</label>
+            <small className="response-guidance">Write a result before revealing the answer choices.</small>
+            <textarea id={`work-${current.id}`} value={run.work[current.id] ?? ''} onChange={e => updateRun(r => ({ ...r, work: { ...r.work, [current.id]: e.target.value } }))} />
+          </section> : <>
+            {run.exam.hideOptionsUntilWork && run.work[current.id] && <div className="work-note"><span>Your work</span><Content className="work-note-content" text={run.work[current.id]} /></div>}
+            {choicesView}
+          </> : !committed && <section className={`written-response written-${questionType(current)}`}>
+            <label htmlFor={`response-${current.id}`}>Your {questionType(current) === 'proof' ? 'proof' : 'answer'}</label>
+            <textarea id={`response-${current.id}`} value={run.responses[current.id] ?? ''} onChange={e => updateRun(r => ({ ...r, responses: { ...r.responses, [current.id]: e.target.value } }))} />
+          </section>}
+          {run.mode === 'washback' && (hintsUsed > 0 || (!committed && nextHint)) && <div className="session-hints">
+            <div aria-live="polite">{hintsUsed > 0 && <ol aria-label="Revealed hints">
+              {current.hints.slice(0, hintsUsed).map((hint, index) => <li key={index}>
+                <b>{hint.label || `Hint ${index + 1}`}</b><Content text={hint.text} />
+              </li>)}
+            </ol>}</div>
+            {!committed && nextHint && <button className="secondary-button" onClick={() => updateRun(r =>
+              (r.hints[current.id] ?? 0) === hintsUsed ? { ...r, hints: { ...r.hints, [current.id]: hintsUsed + 1 } } : r
+            )}><Lightbulb size={15} /> {hintsUsed ? 'Show next hint' : 'Show hint'} · {nextHint.cost} {nextHint.cost === 1 ? 'point' : 'points'}</button>}
+          </div>}
+          {committed && <div ref={answerReviewRef} tabIndex={-1} role="region" aria-label="Answer review" className={`answer-review ${correct ? 'review-correct' : 'review-wrong'}`}>
+            {isMultipleChoice ? <>
+              <div className="review-heading">{correct ? <><CheckCheck size={16} /> Correct · {earned} points</> : <><X size={15} /> {selected ? 'Incorrect' : 'Skipped'}</>}</div>
+              <div className="review-answer"><span>Correct answer</span><Content className="correct-answer-value" text={correctChoice?.text ?? ''} /></div>
+            </> : <>
+              <AnswerComparison response={run.responses[current.id] ?? ''} model={current.expectedAnswer ?? ''} proof={questionType(current) === 'proof'} />
+              {current.rubric && <div className="rubric-review">
+                <b>Grading rubric</b><Content className="explanation-rich" text={current.rubric} />
+                <div className="self-grade" role="group" aria-label="Self-check">
+                  <button aria-pressed={run.selfGrades[current.id] === 'met'} className={run.selfGrades[current.id] === 'met' ? 'selected' : ''} onClick={() => updateRun(r => ({ ...r, selfGrades: { ...r.selfGrades, [current.id]: 'met' } }))}>I met the rubric</button>
+                  <button aria-pressed={run.selfGrades[current.id] === 'review'} className={run.selfGrades[current.id] === 'review' ? 'selected' : ''} onClick={() => updateRun(r => ({ ...r, selfGrades: { ...r.selfGrades, [current.id]: 'review' } }))}>Needs more work</button>
+                  {correct && <span>{earned} points</span>}
+                </div>
+              </div>}
+            </>}
+            {current.explanation && <Content className="explanation-rich" text={current.explanation} />}
+            {choiceReview && <div className="choice-review"><h3>Why the other choices are wrong</h3>{choiceReview}</div>}
+          </div>}
+          {run.mode === 'feedback' && isMultipleChoice && selected && !committed && <div className={`answer-review ${correct ? 'review-correct' : 'review-wrong'}`}><div className="review-heading">{correct ? <><CheckCheck size={16} /> Correct</> : <><X size={15} /> Take another look</>}</div><div className="review-answer"><span>Correct answer</span><Content className="correct-answer-value" text={correctChoice?.text ?? ''} /></div>{current.explanation && <Content className="explanation-rich" text={current.explanation} />}{choiceReview && <div className="choice-review"><h3>Why the other choices are wrong</h3>{choiceReview}</div>}</div>}
+          {typeof previousReview?.answer === 'string' && previousReview.answer.trim() && <div className="work-note"><span>Previous answer</span><Content className="work-note-content" text={previousReview.answer} /></div>}
+          {typeof previousReview?.work === 'string' && previousReview.work.trim() && <div className="work-note"><span>Previous work</span><Content className="work-note-content" text={previousReview.work} /></div>}
+          </div>
+          <div className="question-footer">
+            <button className="secondary-button mobile-question-count" aria-haspopup="dialog" onClick={() => questionMapRef.current?.showModal()} aria-label={`Open question map, question ${run.index + 1} of ${run.exam.questions.length}`}>
+              {run.index + 1} of {run.exam.questions.length}
+            </button>
+            <div className="question-actions">
+              {isMultipleChoice && !committed && (run.mode === 'washback' || choicesHidden) && <button className="action-button text-action" onClick={() => run.mode === 'washback' ? submit(current, true) : advance()}>Skip</button>}
+              {mainAction && <button className="action-button primary" disabled={mainAction.disabled} onClick={mainAction.onClick}>{mainAction.label} <ArrowRight size={15} /></button>}
+            </div>
+          </div>
+        </section>
+      </div>
+      <dialog className="question-map-dialog" ref={questionMapRef} aria-labelledby="question-map-title">
+        <div className="question-map-heading">
+          <h2 id="question-map-title">Questions</h2>
+          <button className="icon-button" aria-label="Close question map" onClick={() => questionMapRef.current?.close()}><X size={17} /></button>
+        </div>
+        {questionMap}
+        <button className="secondary-button" onClick={() => { questionMapRef.current?.close(); setConfirmFinish(true) }}>Finish session</button>
+      </dialog>
+    </main>}
 
-    {screen === 'results' && run && <main className="results-page"><div className="result-mark"><CheckCheck size={24} /></div><div className="eyebrow">SESSION COMPLETE</div><h1>Good work.<br /><em>Let it settle.</em></h1><p className="result-subtitle">{run.exam.title} — {fmtTime(run.seconds)} of considered work</p><div className="result-score"><span>YOUR SCORE</span><b>{score(run)}<i> / {maxScore}</i></b><div className="result-bar"><i style={{ width: `${maxScore ? score(run) / maxScore * 100 : 0}%` }} /></div><small>{questionHistory([run]).filter(entry => entry.outcome === 'correct').length} of {run.exam.questions.length} self-checked as correct</small></div><div className="result-actions"><button className="primary-button" onClick={() => { start() }}><RotateCcw size={15} /> Try this set again</button>{questionHistory([run]).some(entry => entry.practice) && <button className="secondary-button" onClick={() => openMistakePractice()}>Practice from mistakes</button>}<button className="secondary-button" onClick={reset}>Return to your space</button></div><div className="result-quote">—Understanding is not a destination. It is the shape of the next question.—</div></main>}
+    {screen === 'results' && run && <main className="results-page">
+      <h1>Session results</h1>
+      <p className="result-subtitle">{run.exam.title} · {fmtTime(run.seconds)}</p>
+      <div className="result-score">
+        <span>Score</span><b>{score(run)}<i> / {maxScore}</i></b>
+        <div className="result-bar"><i style={{ width: `${maxScore ? score(run) / maxScore * 100 : 0}%` }} /></div>
+        <small>{resultHistory.filter(entry => entry.outcome === 'correct').length} of {run.exam.questions.length} correct</small>
+        {resultSummary.some(([count]) => count > 0) && <p className="result-breakdown">{resultSummary.filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`).join(' · ')}</p>}
+      </div>
+      <div className="result-actions">
+        {resultReview && resultReviewCount > 0 && <button className="primary-button" onClick={() => startWith(resultReview.exam, resultReview.exam.mode, resultReview.previous)}>{reviewLabel(resultReviewCount)} <ArrowRight size={16} /></button>}
+        <button className={resultReviewCount ? 'secondary-button' : 'primary-button'} onClick={() => startWith(run.exam, run.mode, run.review)}><RotateCcw size={15} /> Try this set again</button>
+        {resultReviewCount > 0 && <button className="secondary-button" onClick={() => openMistakePractice('', resultHistory.filter(entry => entry.practice).map(entry => entry.key))}>Practice from mistakes</button>}
+        <button className="secondary-button" onClick={goHome}>Home</button>
+      </div>
+    </main>}
 
-    {jsonOpen && <div className="modal-backdrop" onClick={() => setJsonOpen(false)}><section className="json-modal" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">EXAM SOURCE</span><h2>Bring your own questions</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Paste a JSON exam or load a file. Your questions can be on any subject, in any language.</p><button className="file-drop" onClick={() => fileRef.current?.click()}><FileJson2 size={19} /><span><b>Choose a JSON file</b><small>.json — stays on your device</small></span><ArrowRight size={15} /></button><input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={async e => { const file = e.target.files?.[0]; if (file) importJson(await file.text()) }} /><div className="textarea-label">OR PASTE JSON</div><textarea value={jsonText} onChange={e => setJsonText(e.target.value)} placeholder="Paste your exam JSON here—" spellCheck={false} /><div className="modal-bottom">{error && <span className="error-text">{error}</span>}<button className="primary-button" onClick={() => importJson(jsonText)} disabled={!jsonText.trim()}>Use and start exam <ArrowRight size={15} /></button></div><button className="format-link" onClick={() => setJsonText(JSON.stringify(demoExam, null, 2))}>View a complete example format</button></section></div>}
+    {jsonOpen && <div className="modal-backdrop" onClick={() => setJsonOpen(false)}><section className="json-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><h2 id="import-title">Import an exam</h2><button className="icon-button" onClick={() => setJsonOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Choose a JSON file or paste the exam below.</p><button className="file-drop" onClick={() => fileRef.current?.click()}><FileJson2 size={19} /><span><b>Choose a JSON file</b><small>.json — stays on your device</small></span><ArrowRight size={15} /></button><input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={async e => { const file = e.target.files?.[0]; if (file) importJson(await file.text()) }} /><div className="textarea-label">OR PASTE JSON</div><textarea value={jsonText} onChange={e => setJsonText(e.target.value)} placeholder="Paste your exam JSON here—" spellCheck={false} /><div className="modal-bottom">{error && <span className="error-text">{error}</span>}<button className="primary-button" onClick={() => importJson(jsonText)} disabled={!jsonText.trim()}>Use and start exam <ArrowRight size={15} /></button></div><button className="format-link" onClick={() => setJsonText(JSON.stringify(demoExam, null, 2))}>View a complete example format</button></section></div>}
 
-    {promptOpen && <div className="modal-backdrop" onClick={() => setPromptOpen(false)}><section className="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow"><Sparkles size={12} /> PROMPT STUDIO</span><h2 id="prompt-title">Shape your next exam</h2></div><button className="icon-button" onClick={() => setPromptOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Set the scope. Your copy-ready instruction updates as you edit. Paste it into your preferred LLM, then bring its JSON response back here.</p><div className="prompt-fields">
+    {promptOpen && <div className="modal-backdrop" onClick={() => setPromptOpen(false)}><section className="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><h2 id="prompt-title">Build an exam prompt</h2><button className="icon-button" onClick={() => setPromptOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Copy the prompt into your AI tool, then import the exam JSON it returns.</p><div className="prompt-fields">
       <label className="prompt-style">Study purpose
         <select value={purpose} onChange={e => { setPurpose(e.target.value as StudyPurpose); setPromptCopied(false) }}>
           {Object.entries(studyPurposes).map(([value, { label }]) => <option key={value} value={value}>{label}</option>)}
@@ -415,12 +635,14 @@ export default function App() {
           setPromptCopied(false)
         }} />
       </label>}
-      <label>Subject or topic<input value={promptSpec.subject} onChange={e => setPromptSpec(s => ({ ...s, subject: e.target.value }))} placeholder={purpose === 'general' ? defaultPrompt.subject : 'Infer from your material'} /></label><label>Learning goal<textarea rows={2} placeholder={purpose === 'general' ? defaultPrompt.goal : 'Optional focus for this set'} value={promptSpec.goal} onChange={e => setPromptSpec(s => ({ ...s, goal: e.target.value }))} /></label><label>Level<input placeholder={purpose === 'general' ? defaultPrompt.level : 'Match your material'} value={promptSpec.level} onChange={e => setPromptSpec(s => ({ ...s, level: e.target.value }))} /></label><div className="prompt-counts"><span>Questions by type <small>{Object.values(promptSpec.questionCounts).reduce((sum, value) => sum + value, 0)} total · maximum 60</small></span><div className="prompt-count-grid">{([ ["multiple-choice", "Multiple choice"], ["short-answer", "Short answer"], ["free-response", "Written response"], ["proof", "Proof"] ] as [QuestionType, string][]).map(([type, label]) => <label key={type}><span>{label}</span><input aria-label={`${label} question count`} type="number" min={0} max={60} value={promptSpec.questionCounts[type]} onChange={e => updateQuestionCount(type, Number(e.target.value))} /></label>)}</div></div><label>Exam mode<select value={promptSpec.mode} onChange={e => setPromptSpec(s => ({ ...s, mode: e.target.value as Exam['mode'] }))}><option value="washback">Washback — one at a time, hints cost points</option><option value="feedback">Feedback — explore and revise answers</option></select></label>{promptSpec.questionCounts['multiple-choice'] > 0 && <label>Options per multiple-choice question<input type="number" min={2} max={8} value={promptSpec.choicesPerQuestion} onChange={e => setPromptSpec(s => ({ ...s, choicesPerQuestion: Math.max(2, Math.min(8, Number(e.target.value) || 2)) }))} /></label>}<label className="prompt-style">Question style<textarea rows={2} placeholder={purpose === 'general' ? defaultPrompt.style : 'Optional style preferences'} value={promptSpec.style} onChange={e => setPromptSpec(s => ({ ...s, style: e.target.value }))} /></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.hideOptionsUntilWork} disabled={promptSpec.questionCounts["multiple-choice"] === 0} onChange={e => setPromptSpec(s => ({ ...s, hideOptionsUntilWork: e.target.checked }))} /><span><b>Solve before seeing choices</b><small>Ask me to write my result before revealing multiple-choice options.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeReferences} onChange={e => setPromptSpec(s => ({ ...s, includeReferences: e.target.checked }))} /><span><b>Suggest books and chapters</b><small>Include relevant textbook chapters and sections.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeStudyGuide} onChange={e => setPromptSpec(s => ({ ...s, includeStudyGuide: e.target.checked }))} /><span><b>Include a short study guide</b><small>Show notes before questions and allow switching between them.</small></span></label></div><div className="prompt-preview-head"><span className="textarea-label">LIVE PROMPT PREVIEW</span><span>JSON-only output — app schema included</span></div><textarea ref={promptRef} className="prompt-preview" aria-label="Live prompt preview" value={prompt} placeholder="Add the required material to see your prompt." readOnly spellCheck={false} onFocus={e => e.currentTarget.select()} /><div className="prompt-actions"><button className="secondary-button" onClick={() => { setPromptOpen(false); setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={14} /> I have the JSON</button><button className="primary-button" onClick={copyPrompt} disabled={!promptReady}><Copy size={14} /> {promptCopied ? 'Copied — paste into your LLM' : 'Copy prompt'}</button></div></section></div>}
+      <label>Subject or topic<input value={promptSpec.subject} onChange={e => setPromptSpec(s => ({ ...s, subject: e.target.value }))} placeholder={purpose === 'general' ? defaultPrompt.subject : 'Infer from your material'} /></label><label>Learning goal<textarea rows={2} placeholder={purpose === 'general' ? defaultPrompt.goal : 'Optional focus for this set'} value={promptSpec.goal} onChange={e => setPromptSpec(s => ({ ...s, goal: e.target.value }))} /></label><label>Level<input placeholder={purpose === 'general' ? defaultPrompt.level : 'Match your material'} value={promptSpec.level} onChange={e => setPromptSpec(s => ({ ...s, level: e.target.value }))} /></label><div className="prompt-counts"><span>Questions by type <small>{Object.values(promptSpec.questionCounts).reduce((sum, value) => sum + value, 0)} total · maximum 60</small></span><div className="prompt-count-grid">{([ ["multiple-choice", "Multiple choice"], ["short-answer", "Short answer"], ["free-response", "Written response"], ["proof", "Proof"] ] as [QuestionType, string][]).map(([type, label]) => <label key={type}><span>{label}</span><input aria-label={`${label} question count`} type="number" min={0} max={60} value={promptSpec.questionCounts[type]} onChange={e => updateQuestionCount(type, Number(e.target.value))} /></label>)}</div></div><label>Exam mode<select value={promptSpec.mode} onChange={e => setPromptSpec(s => ({ ...s, mode: e.target.value as Exam['mode'] }))}><option value="washback">Washback — one at a time, hints cost points</option><option value="feedback">Feedback — explore and revise answers</option></select></label>{promptSpec.questionCounts['multiple-choice'] > 0 && <label>Options per multiple-choice question<input type="number" min={2} max={8} value={promptSpec.choicesPerQuestion} onChange={e => setPromptSpec(s => ({ ...s, choicesPerQuestion: Math.max(2, Math.min(8, Number(e.target.value) || 2)) }))} /></label>}<label className="prompt-style">Question style<textarea rows={2} placeholder={purpose === 'general' ? defaultPrompt.style : 'Optional style preferences'} value={promptSpec.style} onChange={e => setPromptSpec(s => ({ ...s, style: e.target.value }))} /></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.hideOptionsUntilWork} disabled={promptSpec.questionCounts["multiple-choice"] === 0} onChange={e => setPromptSpec(s => ({ ...s, hideOptionsUntilWork: e.target.checked }))} /><span><b>Solve before seeing choices</b><small>Ask me to write my result before revealing multiple-choice options.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeReferences} onChange={e => setPromptSpec(s => ({ ...s, includeReferences: e.target.checked }))} /><span><b>Suggest books and chapters</b><small>Include relevant textbook chapters and sections.</small></span></label><label className="prompt-check"><input type="checkbox" checked={promptSpec.includeStudyGuide} onChange={e => setPromptSpec(s => ({ ...s, includeStudyGuide: e.target.checked }))} /><span><b>Include a short study guide</b><small>Show notes before questions and allow switching between them.</small></span></label></div><div className="prompt-preview-head"><span className="textarea-label">LIVE PROMPT PREVIEW</span></div><textarea ref={promptRef} className="prompt-preview" aria-label="Live prompt preview" value={prompt} placeholder="Add the required material to see your prompt." readOnly spellCheck={false} onFocus={e => e.currentTarget.select()} /><div className="prompt-actions"><button className="secondary-button" onClick={() => { setPromptOpen(false); setJsonText(''); setJsonOpen(true); setError('') }}><FileJson2 size={14} /> I have the JSON</button><button className="primary-button" onClick={copyPrompt} disabled={!promptReady}><Copy size={14} /> {promptCopied ? 'Copied — paste into your LLM' : 'Copy prompt'}</button></div></section></div>}
 
-    {explainOpen && current && <div className="modal-backdrop" onClick={() => setExplainOpen(false)}><section className="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="explain-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow"><Sparkles size={12} /> QUESTION SUPPORT</span><h2 id="explain-title">Explain this question</h2></div><button className="icon-button" onClick={() => setExplainOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Copy this question-specific prompt into your LLM. Then paste its JSON explanation below. It will be saved with this session on this device.</p><label className="explain-request-label">What would you like explained?<textarea className="explain-request" rows={3} value={explainRequest} onChange={e => setExplainRequest(e.target.value)} placeholder="For example: What does invariant complement mean here?" /></label><div className="prompt-preview-head"><span className="textarea-label">PROMPT PREVIEW</span><span>Question data and render protocol included</span></div><textarea className="prompt-preview" readOnly value={explanationPrompt} onFocus={e => e.currentTarget.select()} /><div className="explain-response-label">LLM JSON RESPONSE</div><textarea className="explain-response" value={run.explanations?.[current.id] ?? ''} onChange={e => updateRun(r => ({ ...r, explanations: { ...r.explanations, [current.id]: e.target.value } }))} placeholder={'Paste JSON using protocol "stillroom.explanation.v1"'} spellCheck={false} /><div className="prompt-actions"><button className="secondary-button" onClick={copyExplanationPrompt}><Copy size={14} /> {explainCopied ? 'Copied' : 'Copy prompt'}</button><button className="primary-button" onClick={() => setExplainOpen(false)}>Save explanation <Check size={14} /></button></div></section></div>}
+    {explainOpen && current && <div className="modal-backdrop" onClick={() => setExplainOpen(false)}><section className="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="explain-title" onClick={e => e.stopPropagation()}><div className="modal-heading"><h2 id="explain-title">Explain this question</h2><button className="icon-button" onClick={() => setExplainOpen(false)} aria-label="Close"><X size={17} /></button></div><p className="modal-copy">Copy the prompt into your AI tool and paste the JSON response below.</p><label className="explain-request-label">What would you like explained?<textarea className="explain-request" rows={3} value={explainRequest} onChange={e => setExplainRequest(e.target.value)} placeholder="For example: What does invariant complement mean here?" /></label><div className="prompt-preview-head"><span className="textarea-label">PROMPT PREVIEW</span></div><textarea className="prompt-preview" readOnly value={explanationPrompt} onFocus={e => e.currentTarget.select()} /><label className="explain-response-label" htmlFor="explanation-json">JSON response</label><textarea id="explanation-json" className="explain-response" value={run.explanations?.[current.id] ?? ''} onChange={e => updateRun(r => ({ ...r, explanations: { ...r.explanations, [current.id]: e.target.value } }))} placeholder={'Paste JSON using protocol "stillroom.explanation.v1"'} spellCheck={false} /><div className="prompt-actions"><button className="secondary-button" onClick={copyExplanationPrompt}><Copy size={14} /> {explainCopied ? 'Copied' : 'Copy prompt'}</button><button className="primary-button" onClick={() => setExplainOpen(false)}>Save explanation <Check size={14} /></button></div></section></div>}
 
-    {confirmFinish && <div className="modal-backdrop" onClick={() => setConfirmFinish(false)}><section className="confirm-modal" onClick={e => e.stopPropagation()}><button className="modal-close icon-button" onClick={() => setConfirmFinish(false)} aria-label="Close"><X size={17} /></button><div className="result-mark small"><CheckCheck size={19} /></div><div className="eyebrow">PAUSE AND REFLECT</div><h2>Finish this session?</h2><p>You—ve worked through {answered} of {run?.exam.questions.length} questions. Unanswered questions will count as missed.</p><div className="confirm-actions"><button className="secondary-button" onClick={() => setConfirmFinish(false)}>Keep going</button><button className="primary-button" onClick={finish}>Finish session <ArrowRight size={15} /></button></div></section></div>}
-    <footer className="global-footer"><span>STILLROOM <i>—</i> STUDY WITHOUT THE NOISE</span><button onClick={() => { setJsonText(''); setJsonOpen(true); setError('') }}>EXAM FORMAT <ArrowRight size={11} /></button></footer>
+    {confirmFinish && <dialog className="confirm-modal" ref={finishDialogRef} aria-labelledby="finish-title" onCancel={event => { event.preventDefault(); closeFinish() }}>
+      <h2 id="finish-title">Finish this session?</h2><p>{answered} of {run?.exam.questions.length} answered.</p>
+      <div className="confirm-actions"><button className="secondary-button" autoFocus onClick={closeFinish}>Keep going</button><button className="primary-button" onClick={finish}>Finish session <ArrowRight size={15} /></button></div>
+    </dialog>}
   </div>
 }
 
