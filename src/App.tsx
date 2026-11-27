@@ -414,7 +414,7 @@ export default function App() {
 
   return <div className={`app-shell ${screen === 'run' && !run?.studyGuideOpen ? 'session-open' : ''} ${focus && screen === 'run' ? 'focus-mode' : ''}`}>
     <header className="topbar">
-      <button className="brand" onClick={goHome} aria-label="Stillroom home"><span className="brand-icon"><span /></span><span className="brand-name">stillroom<span className="brand-period">.</span></span></button>
+      <button className="brand" onClick={goHome} aria-label="Stillroom home"><span className="brand-icon" aria-hidden="true" /><span className="brand-name">stillroom<span className="brand-period">.</span></span></button>
       <div className="topbar-right">
         {screen === 'run' && !storageError && <span className="saved-state"><span />Autosaved</span>}
         <div className="font-controls" role="group" aria-label="Reading size">
